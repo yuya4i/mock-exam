@@ -46,6 +46,6 @@ RUN python -m camoufox fetch
 
 # アプリケーションコードはボリュームマウントで提供されるため COPY しない
 
-EXPOSE 5000
+EXPOSE 4321
 
-CMD ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000", "--reload", "--debug"]
+CMD ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=4321", "--reload", "--debug"]

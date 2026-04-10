@@ -24,6 +24,6 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # nginx設定（Vue Routerのhistoryモード対応 + APIプロキシ）
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-EXPOSE 80
+EXPOSE 1234
 
 CMD ["nginx", "-g", "daemon off;"]

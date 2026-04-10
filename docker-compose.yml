@@ -8,11 +8,11 @@ services:
       dockerfile: Dockerfile.dev
     container_name: quiz-backend
     ports:
-      - "1234:5000"
+      - "4321:4321"
     environment:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - FLASK_ENV=development
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:1234}
       - HISTORY_FILE=/app/.cache/history.json
     volumes:
       - ./backend:/app
@@ -22,7 +22,7 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4321/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -37,9 +37,9 @@ services:
       dockerfile: Dockerfile.dev
     container_name: quiz-frontend
     ports:
-      - "3000:3000"
+      - "1234:1234"
     environment:
-      - API_PROXY_TARGET=http://backend:5000
+      - API_PROXY_TARGET=http://backend:4321
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public

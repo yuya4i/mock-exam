@@ -9,10 +9,10 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 3000,
+    port: 1234,
     proxy: {
       '/api': {
-        target: process.env.API_PROXY_TARGET || 'http://localhost:5000',
+        target: process.env.API_PROXY_TARGET || 'http://localhost:4321',
         changeOrigin: true,
       }
     },
@@ -21,7 +21,7 @@ export default defineConfig({
       interval: 500,
     },
     hmr: {
-      port: 3000,
+      port: 1234,
     }
   }
 })

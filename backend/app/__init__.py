@@ -16,7 +16,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
 
     # CORS設定（フロントエンドからのアクセスを許可）
-    cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:1234").split(",")
     CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 
     # データベース初期化

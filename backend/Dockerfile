@@ -47,7 +47,7 @@ RUN python -m camoufox fetch
 # ---- アプリケーションコード ----
 COPY . .
 
-EXPOSE 5000
+EXPOSE 4321
 
 # Xvfbを使った仮想ディスプレイで起動（camoufoxのheadless="virtual"対応）
-CMD ["python", "-m", "flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000"]
+CMD ["python", "-m", "flask", "--app", "app", "run", "--host=0.0.0.0", "--port=4321"]
