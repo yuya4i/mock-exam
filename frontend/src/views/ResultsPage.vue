@@ -2,36 +2,12 @@
   <div class="results-page">
     <!-- ヘッダー -->
     <div class="page-header">
-      <h2 class="section-title">正誤履歴</h2>
+      <h2 class="section-title">分析</h2>
       <span class="total-count">{{ resultsStore.totalSessions }} セッション</span>
       <button class="btn btn-secondary" @click="resultsStore.fetchResults()" :disabled="resultsStore.loading" style="margin-left:auto">
         <span v-if="resultsStore.loading" class="spinner"></span>
         <span v-else>更新</span>
       </button>
-    </div>
-
-    <!-- 統計サマリー -->
-    <div v-if="resultsStore.sessions.length > 0" class="stats-row">
-      <div class="stat-card card">
-        <div class="stat-value">{{ resultsStore.totalSessions }}</div>
-        <div class="stat-label">セッション数</div>
-      </div>
-      <div class="stat-card card">
-        <div class="stat-value" :class="scoreColor(resultsStore.averageScore)">{{ resultsStore.averageScore }}%</div>
-        <div class="stat-label">平均正答率</div>
-      </div>
-      <div class="stat-card card">
-        <div class="stat-value">{{ resultsStore.totalQuestions }}</div>
-        <div class="stat-label">総問題数</div>
-      </div>
-    </div>
-
-    <!-- フィルター -->
-    <div v-if="resultsStore.sessions.length > 0" class="filter-row">
-      <select v-model="filterSource" class="form-select" style="max-width:300px">
-        <option value="">全てのドキュメント</option>
-        <option v-for="src in uniqueSources" :key="src" :value="src">{{ src }}</option>
-      </select>
     </div>
 
     <!-- ローディング -->
@@ -48,64 +24,118 @@
     <!-- 空状態 -->
     <div v-else-if="resultsStore.sessions.length === 0" class="empty-state card">
       <span style="font-size:48px">📊</span>
-      <p>まだ正誤履歴がありません。</p>
+      <p>まだ分析データがありません。</p>
       <RouterLink to="/" class="btn btn-primary">問題を生成する</RouterLink>
     </div>
 
-    <!-- セッション一覧 -->
-    <div v-else class="sessions-list">
-      <div
-        v-for="session in filteredSessions"
-        :key="session.session_id"
-        class="session-card card"
-      >
-        <div class="session-header" @click="toggleSession(session.session_id)">
-          <div class="session-info">
-            <span class="session-title">{{ session.source_title || '不明' }}</span>
-            <div class="session-badges">
-              <span class="badge badge-k1">{{ session.model }}</span>
-              <span class="badge badge-k2">{{ session.question_count }}問</span>
-              <span class="badge badge-k3">{{ difficultyLabel(session.difficulty) }}</span>
-            </div>
-          </div>
-          <div class="session-score" v-if="session.score_total > 0">
-            <span class="score-fraction">{{ session.score_correct }}/{{ session.score_total }}</span>
-            <span :class="['score-pct', scoreColor(scorePct(session))]">
-              {{ scorePct(session) }}%
-            </span>
-          </div>
-          <div class="session-score" v-else>
-            <span class="score-pending">未回答</span>
-          </div>
-          <div class="session-meta">
-            <span v-if="session.generated_at">生成: {{ formatDate(session.generated_at) }}</span>
-            <span v-if="session.answered_at">回答: {{ formatDate(session.answered_at) }}</span>
-          </div>
-          <div class="session-actions">
-            <button class="btn btn-danger btn-sm" @click.stop="confirmDelete(session)">削除</button>
-            <span class="expand-icon">{{ expandedSessions[session.session_id] ? '▼' : '▶' }}</span>
-          </div>
+    <!-- メインコンテンツ -->
+    <template v-else>
+      <!-- 統計サマリー -->
+      <div class="stats-row">
+        <div class="stat-card card">
+          <div class="stat-value">{{ resultsStore.totalSessions }}</div>
+          <div class="stat-label">セッション数</div>
         </div>
+        <div class="stat-card card">
+          <div class="stat-value" :class="scoreColor(resultsStore.averageScore)">{{ resultsStore.averageScore }}%</div>
+          <div class="stat-label">平均正答率</div>
+        </div>
+        <div class="stat-card card">
+          <div class="stat-value">{{ resultsStore.totalQuestions }}</div>
+          <div class="stat-label">総問題数</div>
+        </div>
+        <div class="stat-card card">
+          <div class="stat-value">{{ resultsStore.categories.length }}</div>
+          <div class="stat-label">カテゴリ数</div>
+        </div>
+      </div>
 
-        <!-- 展開した問題一覧 -->
-        <div v-if="expandedSessions[session.session_id]" class="session-detail">
-          <div v-if="sessionDetails[session.session_id] === 'loading'" class="loading-state" style="padding:20px">
-            <div class="spinner"></div>
-            <span>読み込み中...</span>
-          </div>
-          <div v-else-if="sessionDetails[session.session_id]" class="detail-questions">
-            <QuestionCard
-              v-for="(q, i) in sessionDetails[session.session_id].questions"
-              :key="q.id"
-              :question="q"
-              :index="i"
-              :user-answer="q.user_answer || null"
-              :revealed="!!q.user_answer"
-            />
+      <!-- レーダーチャート -->
+      <div v-if="radarData" class="card radar-section">
+        <h3 class="card-title">カテゴリ別正答率</h3>
+        <div class="radar-container">
+          <Radar :data="radarData" :options="radarOptions" />
+        </div>
+        <div class="category-legend">
+          <div
+            v-for="cat in resultsStore.categories"
+            :key="cat.category"
+            class="legend-item"
+          >
+            <span class="legend-name">{{ cat.category }}</span>
+            <span class="legend-stats">
+              {{ cat.total_correct }}/{{ cat.total_answered }}問
+              <span :class="scoreColor(cat.accuracy)">({{ cat.accuracy }}%)</span>
+            </span>
           </div>
         </div>
       </div>
-    </div>
+
+      <!-- セッション一覧 -->
+      <h3 class="sub-title">正誤履歴</h3>
+
+      <!-- フィルター -->
+      <div class="filter-row">
+        <select v-model="filterCategory" class="form-select" style="max-width:300px">
+          <option value="">全てのカテゴリ</option>
+          <option v-for="cat in uniqueCategories" :key="cat" :value="cat">{{ cat }}</option>
+        </select>
+      </div>
+
+      <div class="sessions-list">
+        <div
+          v-for="session in filteredSessions"
+          :key="session.session_id"
+          class="session-card card"
+        >
+          <div class="session-header" @click="toggleSession(session.session_id)">
+            <div class="session-info">
+              <span class="session-title">{{ session.source_title || '不明' }}</span>
+              <div class="session-badges">
+                <span v-if="session.category" class="badge badge-k1">{{ session.category }}</span>
+                <span class="badge badge-k2">{{ session.question_count }}問</span>
+                <span class="badge badge-k3">{{ difficultyLabel(session.difficulty) }}</span>
+              </div>
+            </div>
+            <div class="session-score" v-if="session.score_total > 0">
+              <span class="score-fraction">{{ session.score_correct }}/{{ session.score_total }}</span>
+              <span :class="['score-pct', scoreColor(scorePct(session))]">
+                {{ scorePct(session) }}%
+              </span>
+            </div>
+            <div class="session-score" v-else>
+              <span class="score-pending">未回答</span>
+            </div>
+            <div class="session-meta">
+              <span v-if="session.generated_at">生成: {{ formatDate(session.generated_at) }}</span>
+              <span v-if="session.answered_at">回答: {{ formatDate(session.answered_at) }}</span>
+            </div>
+            <div class="session-actions">
+              <button class="btn btn-danger btn-sm" @click.stop="confirmDelete(session)">削除</button>
+              <span class="expand-icon">{{ expandedSessions[session.session_id] ? '▼' : '▶' }}</span>
+            </div>
+          </div>
+
+          <!-- 展開した問題一覧 -->
+          <div v-if="expandedSessions[session.session_id]" class="session-detail">
+            <div v-if="sessionDetails[session.session_id] === 'loading'" class="loading-state" style="padding:20px">
+              <div class="spinner"></div>
+              <span>読み込み中...</span>
+            </div>
+            <div v-else-if="sessionDetails[session.session_id]" class="detail-questions">
+              <QuestionCard
+                v-for="(q, i) in sessionDetails[session.session_id].questions"
+                :key="q.id"
+                :question="q"
+                :index="i"
+                :user-answer="q.user_answer || null"
+                :revealed="!!q.user_answer"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <!-- 削除確認ダイアログ -->
     <div v-if="deleteTarget" class="modal-overlay" @click.self="deleteTarget = null">
@@ -132,25 +162,110 @@
 import { ref, computed, reactive, onMounted } from 'vue'
 import { useResultsStore } from '@/stores'
 import QuestionCard from '@/components/QuestionCard.vue'
+import { Radar } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  RadialLinearScale,
+  PointElement,
+  LineElement,
+  Filler,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+
+ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend)
 
 const resultsStore = useResultsStore()
 
-const filterSource     = ref('')
+const filterCategory   = ref('')
 const expandedSessions = reactive({})
 const sessionDetails   = reactive({})
 const deleteTarget     = ref(null)
 const deleting         = ref(false)
 
-const uniqueSources = computed(() => {
-  const sources = new Set(resultsStore.sessions.map((s) => s.source_title).filter(Boolean))
-  return [...sources]
+// ---- レーダーチャート ----
+const radarData = computed(() => {
+  const cats = resultsStore.categories
+  if (!cats.length) return null
+
+  return {
+    labels: cats.map((c) => c.category),
+    datasets: [
+      {
+        label: '正答率 (%)',
+        data: cats.map((c) => c.accuracy),
+        backgroundColor: 'rgba(99, 102, 241, 0.2)',
+        borderColor: 'rgba(99, 102, 241, 0.8)',
+        borderWidth: 2,
+        pointBackgroundColor: 'rgba(99, 102, 241, 1)',
+        pointBorderColor: '#fff',
+        pointRadius: 4,
+        pointHoverRadius: 6,
+      },
+      {
+        label: '出題数',
+        data: cats.map((c) => Math.min(c.total_answered, 100)),
+        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+        borderColor: 'rgba(34, 197, 94, 0.5)',
+        borderWidth: 1,
+        borderDash: [4, 4],
+        pointRadius: 2,
+        hidden: true,
+      },
+    ],
+  }
+})
+
+const radarOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  scales: {
+    r: {
+      min: 0,
+      max: 100,
+      ticks: {
+        stepSize: 20,
+        color: '#94a3b8',
+        backdropColor: 'transparent',
+        font: { size: 11 },
+      },
+      grid: {
+        color: 'rgba(51, 65, 85, 0.5)',
+      },
+      angleLines: {
+        color: 'rgba(51, 65, 85, 0.5)',
+      },
+      pointLabels: {
+        color: '#f1f5f9',
+        font: { size: 12, weight: '600' },
+      },
+    },
+  },
+  plugins: {
+    legend: {
+      display: true,
+      labels: { color: '#94a3b8', font: { size: 11 } },
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}${ctx.datasetIndex === 0 ? '%' : '問'}`,
+      },
+    },
+  },
+}
+
+// ---- フィルター ----
+const uniqueCategories = computed(() => {
+  const cats = new Set(resultsStore.sessions.map((s) => s.category).filter(Boolean))
+  return [...cats]
 })
 
 const filteredSessions = computed(() => {
-  if (!filterSource.value) return resultsStore.sessions
-  return resultsStore.sessions.filter((s) => s.source_title === filterSource.value)
+  if (!filterCategory.value) return resultsStore.sessions
+  return resultsStore.sessions.filter((s) => s.category === filterCategory.value)
 })
 
+// ---- ユーティリティ ----
 function scorePct(session) {
   if (!session.score_total) return 0
   return Math.round((session.score_correct / session.score_total) * 100)
@@ -224,10 +339,12 @@ onMounted(() => {
 .section-title { font-size: 16px; font-weight: 700; }
 .total-count { font-size: 12px; color: var(--text-muted); }
 
+.sub-title { font-size: 14px; font-weight: 700; margin-top: 8px; }
+
 /* 統計 */
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
 }
 .stat-card {
@@ -243,6 +360,43 @@ onMounted(() => {
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 4px;
+}
+
+/* レーダーチャート */
+.radar-section {
+  padding: 20px;
+}
+.card-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+.radar-container {
+  position: relative;
+  height: 360px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+.category-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.legend-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.legend-stats {
+  color: var(--text-muted);
 }
 
 .filter-row { display: flex; gap: 12px; }
@@ -390,8 +544,9 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .stats-row { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: repeat(2, 1fr); }
   .session-header { flex-wrap: wrap; }
   .session-meta { min-width: auto; flex-basis: 100%; }
+  .radar-container { height: 280px; }
 }
 </style>

@@ -46,6 +46,7 @@ def init_db() -> None:
                 model TEXT NOT NULL,
                 source_title TEXT NOT NULL,
                 source_type TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
                 question_count INTEGER NOT NULL,
                 difficulty TEXT NOT NULL,
                 levels TEXT NOT NULL,
@@ -58,6 +59,21 @@ def init_db() -> None:
             );
         """)
         conn.commit()
+
+        # マイグレーション: category カラムが無ければ追加
+        cursor = conn.execute("PRAGMA table_info(quiz_sessions)")
+        columns = {row["name"] for row in cursor.fetchall()}
+        if "category" not in columns:
+            conn.execute(
+                "ALTER TABLE quiz_sessions ADD COLUMN category TEXT NOT NULL DEFAULT ''"
+            )
+            # 既存レコードの category を source_title から推定
+            conn.execute(
+                "UPDATE quiz_sessions SET category = source_title WHERE category = ''"
+            )
+            conn.commit()
+            logger.info("マイグレーション: quiz_sessions に category カラムを追加")
+
         logger.info(f"データベース初期化完了: {DB_PATH}")
     finally:
         conn.close()

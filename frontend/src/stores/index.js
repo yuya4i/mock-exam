@@ -284,9 +284,10 @@ export const useDocumentsStore = defineStore('documents', () => {
 // 結果ストア
 // ======================================================================
 export const useResultsStore = defineStore('results', () => {
-  const sessions = ref([])
-  const loading  = ref(false)
-  const error    = ref(null)
+  const sessions   = ref([])
+  const categories = ref([])
+  const loading    = ref(false)
+  const error      = ref(null)
 
   const totalSessions = computed(() => sessions.value.length)
 
@@ -305,8 +306,12 @@ export const useResultsStore = defineStore('results', () => {
     loading.value = true
     error.value   = null
     try {
-      const res = await api.get('/results')
-      sessions.value = res.data.sessions || []
+      const [sessRes, catRes] = await Promise.all([
+        api.get('/results'),
+        api.get('/results/categories'),
+      ])
+      sessions.value   = sessRes.data.sessions   || []
+      categories.value = catRes.data.categories   || []
     } catch (e) {
       error.value = e.message
     } finally {
@@ -334,7 +339,7 @@ export const useResultsStore = defineStore('results', () => {
   }
 
   return {
-    sessions, loading, error,
+    sessions, categories, loading, error,
     totalSessions, averageScore, totalQuestions,
     fetchResults, getSession, saveAnswers, deleteSession,
   }

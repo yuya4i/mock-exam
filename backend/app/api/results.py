@@ -22,7 +22,7 @@ def list_results():
     try:
         if document_id:
             rows = conn.execute(
-                """SELECT id, session_id, source_title, model,
+                """SELECT id, session_id, source_title, category, model,
                           question_count, difficulty, score_correct,
                           score_total, generated_at, answered_at
                    FROM quiz_sessions
@@ -32,7 +32,7 @@ def list_results():
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT id, session_id, source_title, model,
+                """SELECT id, session_id, source_title, category, model,
                           question_count, difficulty, score_correct,
                           score_total, generated_at, answered_at
                    FROM quiz_sessions
@@ -41,6 +41,40 @@ def list_results():
 
         sessions = [dict(row) for row in rows]
         return jsonify({"sessions": sessions}), 200
+    finally:
+        conn.close()
+
+
+@results_bp.get("/results/categories")
+def list_categories():
+    """
+    カテゴリ別の集計データを返す（レーダーチャート用）。
+    同一カテゴリの全セッションのスコアを合算する。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT category,
+                      COUNT(*) AS session_count,
+                      SUM(question_count) AS total_questions,
+                      SUM(COALESCE(score_correct, 0)) AS total_correct,
+                      SUM(COALESCE(score_total, 0)) AS total_answered
+               FROM quiz_sessions
+               WHERE category != ''
+               GROUP BY category
+               ORDER BY total_answered DESC"""
+        ).fetchall()
+
+        categories = []
+        for row in rows:
+            r = dict(row)
+            r["accuracy"] = (
+                round(r["total_correct"] / r["total_answered"] * 100)
+                if r["total_answered"] > 0 else 0
+            )
+            categories.append(r)
+
+        return jsonify({"categories": categories}), 200
     finally:
         conn.close()
 

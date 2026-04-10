@@ -18,6 +18,33 @@ _history_service = get_history_service()
 VALID_DOC_TYPES = {"table", "csv", "pdf", "png"}
 
 
+def _derive_category(title: str, source_url: str) -> str:
+    """ソースタイトル/URLからカテゴリ名を推定する。"""
+    import re
+    # 既知のキーワードマッピング
+    keywords = {
+        "jstqb":    "JSTQB",
+        "istqb":    "ISTQB",
+        "ネットワークスペシャリスト": "ネットワークスペシャリスト",
+        "応用情報":  "応用情報技術者",
+        "基本情報":  "基本情報技術者",
+        "情報セキュリティ": "情報セキュリティ",
+        "データベーススペシャリスト": "データベーススペシャリスト",
+        "aws":      "AWS",
+        "azure":    "Azure",
+        "gcp":      "Google Cloud",
+        "python":   "Python",
+        "java":     "Java",
+        "javascript": "JavaScript",
+    }
+    combined = f"{title} {source_url}".lower()
+    for keyword, category in keywords.items():
+        if keyword in combined:
+            return category
+    # マッチしなければタイトルをそのままカテゴリに
+    return title if title else "その他"
+
+
 def _save_quiz_session(result: dict, params: dict) -> None:
     """クイズセッションをSQLiteに保存する。"""
     try:
@@ -26,18 +53,22 @@ def _save_quiz_session(result: dict, params: dict) -> None:
 
         source_info = result.get("source_info", {})
         document_id = source_info.get("document_id")
+        title = source_info.get("title", "")
+        source_url = source_info.get("source", "")
+        category = _derive_category(title, source_url)
 
         conn.execute(
             """INSERT OR IGNORE INTO quiz_sessions
                (session_id, document_id, model, source_title, source_type,
-                question_count, difficulty, levels, questions, generated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                category, question_count, difficulty, levels, questions, generated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result["session_id"],
                 document_id,
                 result["model"],
-                source_info.get("title", ""),
+                title,
                 source_info.get("type", ""),
+                category,
                 len(result.get("questions", [])),
                 params.get("difficulty", "medium"),
                 json.dumps(params.get("levels", []), ensure_ascii=False),

@@ -12,7 +12,7 @@
       <div class="navbar-links" :class="{ open: navOpen }">
         <RouterLink to="/"         class="nav-link" active-class="active" @click="navOpen = false">問題生成</RouterLink>
         <RouterLink to="/database" class="nav-link" active-class="active" @click="navOpen = false">データベース</RouterLink>
-        <RouterLink to="/results"  class="nav-link" active-class="active" @click="navOpen = false">正誤</RouterLink>
+        <RouterLink to="/results"  class="nav-link" active-class="active" @click="navOpen = false">分析</RouterLink>
         <RouterLink to="/settings" class="nav-link" active-class="active" @click="navOpen = false">設定</RouterLink>
       </div>
       <div class="ollama-status">
