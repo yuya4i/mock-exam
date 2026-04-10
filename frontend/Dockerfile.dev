@@ -1,0 +1,15 @@
+# ============================================================
+# QuizGen フロントエンド 開発用 Dockerfile
+# Vite dev server でホットリロード対応
+# ============================================================
+FROM node:22-alpine
+
+WORKDIR /app
+
+# package.json をコピーして依存関係をインストール（キャッシュ活用）
+COPY package.json ./
+RUN npm install --save-exact
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]

@@ -1,0 +1,74 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: 🧠
+      - generic [ref=e7]: QuizGen
+    - button "メニュー" [active] [ref=e8] [cursor=pointer]
+    - generic [ref=e68]:
+      - link "問題生成" [ref=e69] [cursor=pointer]:
+        - /url: /
+      - link "データベース" [ref=e70] [cursor=pointer]:
+        - /url: /database
+      - link "正誤" [ref=e71] [cursor=pointer]:
+        - /url: /results
+      - link "設定" [ref=e72] [cursor=pointer]:
+        - /url: /settings
+  - main [ref=e14]:
+    - generic [ref=e15]:
+      - button "☰ コンテンツ" [ref=e16] [cursor=pointer]
+      - generic [ref=e18]:
+        - heading "問題生成設定" [level=2] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - generic [ref=e22]: コンテンツソース（URL または テキスト）
+            - generic [ref=e23]:
+              - textbox "https://jstqb.jp/syllabus.html または 直接テキストを入力..." [ref=e24]
+              - button "プレビュー" [disabled] [ref=e25]:
+                - generic [ref=e26]: プレビュー
+          - generic [ref=e27]:
+            - generic [ref=e28]: Ollamaモデル
+            - generic [ref=e29]:
+              - combobox [ref=e30]:
+                - option "モデルを選択..." [disabled] [selected]
+                - option "qwen2.5:72b (44.2GB)"
+                - option "gpt-oss_nfsw:latest (14.6GB)"
+                - option "qwen3.5-9b-uncensored-hauhaucs-aggressive-bf16:latest (16.7GB)"
+                - option "qwen3.5-9b-heretic:latest (8.9GB)"
+                - option "qwen3.5-9b-claude-4.6-highiq-thinking-heretic-uncensored:latest (8.9GB)"
+                - option "qwen3.5-27b:latest (15.6GB)"
+                - option "qwen3.5-35b-uncensored:latest (19.7GB)"
+              - button "↻" [ref=e66] [cursor=pointer]:
+                - generic [ref=e67]: ↻
+          - generic [ref=e33]:
+            - generic [ref=e34]: 問題数（1〜20）
+            - spinbutton [ref=e35]: "5"
+          - generic [ref=e36]:
+            - generic [ref=e37]: 知識レベル
+            - generic [ref=e38]:
+              - generic [ref=e39] [cursor=pointer]:
+                - checkbox "K1" [ref=e40]
+                - generic [ref=e41]: K1
+              - generic [ref=e42] [cursor=pointer]:
+                - checkbox "K2" [checked] [ref=e43]
+                - generic [ref=e44]: K2
+              - generic [ref=e45] [cursor=pointer]:
+                - checkbox "K3" [checked] [ref=e46]
+                - generic [ref=e47]: K3
+              - generic [ref=e48] [cursor=pointer]:
+                - checkbox "K4" [checked] [ref=e49]
+                - generic [ref=e50]: K4
+          - generic [ref=e51]:
+            - generic [ref=e52]: 難易度
+            - generic [ref=e53]:
+              - generic [ref=e54] [cursor=pointer]:
+                - radio "易しい" [ref=e55]
+                - generic [ref=e56]: 易しい
+              - generic [ref=e57] [cursor=pointer]:
+                - radio "普通" [checked] [ref=e58]
+                - generic [ref=e59]: 普通
+              - generic [ref=e60] [cursor=pointer]:
+                - radio "難しい" [ref=e61]
+                - generic [ref=e62]: 難しい
+        - button "✨ 問題を生成する" [disabled] [ref=e64]:
+          - generic [ref=e65]: ✨
+          - text: 問題を生成する

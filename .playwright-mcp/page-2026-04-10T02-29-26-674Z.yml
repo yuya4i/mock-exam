@@ -1,0 +1,77 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: 🧠
+      - generic [ref=e7]: QuizGen
+      - generic [ref=e8]: AI模擬問題生成
+    - generic [ref=e9]:
+      - link "問題生成" [ref=e10] [cursor=pointer]:
+        - /url: /
+      - link "データベース" [ref=e11] [cursor=pointer]:
+        - /url: /database
+      - link "正誤" [ref=e12] [cursor=pointer]:
+        - /url: /results
+      - link "設定" [ref=e13] [cursor=pointer]:
+        - /url: /settings
+    - generic [ref=e16]: Ollama
+  - main [ref=e17]:
+    - generic [ref=e18]:
+      - complementary [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e21]: 保存済みコンテンツ
+          - button "◀" [ref=e22] [cursor=pointer]
+          - button "↻" [ref=e23] [cursor=pointer]
+        - generic "JSTQB認定テスト技術者資格-シラバス（学習事項）・用語集-" [ref=e25] [cursor=pointer]:
+          - generic [ref=e26]: 🌐
+          - generic [ref=e27]: JSTQB認定テスト技術者資格-シラバス（学習事項）・用語集-
+      - generic [ref=e29]:
+        - heading "問題生成設定" [level=2] [ref=e30]
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - generic [ref=e33]: コンテンツソース（URL または テキスト）
+            - generic [ref=e34]:
+              - textbox "https://jstqb.jp/syllabus.html または 直接テキストを入力..." [ref=e35]
+              - button "プレビュー" [disabled] [ref=e36]:
+                - generic [ref=e37]: プレビュー
+          - generic [ref=e38]:
+            - generic [ref=e39]: Ollamaモデル
+            - generic [ref=e40]:
+              - combobox [ref=e41]:
+                - option "モデルを選択..." [disabled] [selected]
+              - button [disabled] [ref=e42]
+          - generic [ref=e44]:
+            - generic [ref=e45]: 問題数（1〜20）
+            - spinbutton [ref=e46]: "5"
+          - generic [ref=e47]:
+            - generic [ref=e48]: 知識レベル
+            - generic [ref=e49]:
+              - generic [ref=e50] [cursor=pointer]:
+                - checkbox "K1" [ref=e51]
+                - generic [ref=e52]: K1
+              - generic [ref=e53] [cursor=pointer]:
+                - checkbox "K2" [checked] [ref=e54]
+                - generic [ref=e55]: K2
+              - generic [ref=e56] [cursor=pointer]:
+                - checkbox "K3" [checked] [ref=e57]
+                - generic [ref=e58]: K3
+              - generic [ref=e59] [cursor=pointer]:
+                - checkbox "K4" [checked] [ref=e60]
+                - generic [ref=e61]: K4
+          - generic [ref=e62]:
+            - generic [ref=e63]: 難易度
+            - generic [ref=e64]:
+              - generic [ref=e65] [cursor=pointer]:
+                - radio "易しい" [ref=e66]
+                - generic [ref=e67]: 易しい
+              - generic [ref=e68] [cursor=pointer]:
+                - radio "普通" [checked] [ref=e69]
+                - generic [ref=e70]: 普通
+              - generic [ref=e71] [cursor=pointer]:
+                - radio "難しい" [ref=e72]
+                - generic [ref=e73]: 難しい
+        - button "✨ 問題を生成する" [disabled] [ref=e75]:
+          - generic [ref=e76]: ✨
+          - text: 問題を生成する
+      - complementary [ref=e77]:
+        - generic [ref=e79]: スクレイピング経過
+        - paragraph [ref=e81]: スクレイピング開始後に経過が表示されます

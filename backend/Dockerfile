@@ -1,0 +1,53 @@
+# ============================================================
+# QuizGen バックエンド Dockerfile
+# camoufox（Firefox ベースのアンチボット検出ブラウザ）対応
+# ============================================================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ---- システム依存パッケージ ----
+# camoufox（Firefox）の実行に必要なライブラリ群
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    wget \
+    ca-certificates \
+    # Firefox実行に必要なライブラリ
+    libgtk-3-0 \
+    libdbus-glib-1-2 \
+    libxt6 \
+    libxrender1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    # Xvfb（仮想ディスプレイ）
+    xvfb \
+    x11-utils \
+    # フォント
+    fonts-liberation \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Python依存パッケージ ----
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---- camoufoxブラウザバイナリのダウンロード ----
+# Dockerビルド時に一度だけ実行（イメージに含める）
+RUN python -m camoufox fetch
+
+# ---- アプリケーションコード ----
+COPY . .
+
+EXPOSE 5000
+
+# Xvfbを使った仮想ディスプレイで起動（camoufoxのheadless="virtual"対応）
+CMD ["python", "-m", "flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000"]
