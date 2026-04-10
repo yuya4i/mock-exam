@@ -1,23 +1,21 @@
 services:
   # ============================================================
-  # バックエンド（Flask - 開発モード / ホットリロード対応）
+  # バックエンド（Flask）
   # ============================================================
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: quiz-backend
     ports:
       - "4321:4321"
     environment:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - FLASK_ENV=development
+      - FLASK_ENV=${FLASK_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:1234}
       - HISTORY_FILE=/app/.cache/history.json
     volumes:
-      - ./backend:/app
       - quiz-cache:/app/.cache
-      - backend-packages:/usr/local/lib/python3.11/site-packages
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -26,26 +24,18 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
 
   # ============================================================
-  # フロントエンド（Vite dev server - ホットリロード対応）
+  # フロントエンド（nginx）
   # ============================================================
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: quiz-frontend
     ports:
       - "1234:1234"
-    environment:
-      - API_PROXY_TARGET=http://backend:4321
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-      - ./frontend/vite.config.js:/app/vite.config.js
-      - ./frontend/index.html:/app/index.html
-      - frontend-node-modules:/app/node_modules
     depends_on:
       backend:
         condition: service_healthy
@@ -53,8 +43,4 @@ services:
 
 volumes:
   quiz-cache:
-    driver: local
-  backend-packages:
-    driver: local
-  frontend-node-modules:
     driver: local
