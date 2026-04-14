@@ -28,6 +28,15 @@ import requests
 from bs4 import BeautifulSoup
 from cachetools import TTLCache
 
+from app.services.safe_fetch import (
+    FetchPolicy,
+    ResponseTooLargeError,
+    UnsafeURLError,
+    check_url,
+    is_url_allowed,
+    safe_get,
+)
+
 logger = logging.getLogger(__name__)
 
 # ======================================================================
@@ -209,6 +218,14 @@ class CamoufoxPlugin(SourcePlugin):
         depth     = min(int(kwargs.get("depth", 1)), MAX_DEPTH)
         doc_types = set(kwargs.get("doc_types", ["table", "csv", "pdf", "png"]))
 
+        # Entry-point SSRF validation. If the user-supplied URL is rejected,
+        # surface a ValueError (UnsafeURLError) so the API layer can map it
+        # to a 422 with a user-safe message instead of a 500. This is the
+        # first layer of the deny-by-default policy — see safe_fetch.py and
+        # SECURITY.md.
+        policy = FetchPolicy()
+        check_url(source, policy)
+
         cache_key = hashlib.md5(
             f"{source}|{depth}|{sorted(doc_types)}".encode()
         ).hexdigest()
@@ -216,9 +233,9 @@ class CamoufoxPlugin(SourcePlugin):
             return _cache[cache_key]
 
         if _is_camoufox_available():
-            result = self._fetch_with_camoufox(source, depth, doc_types)
+            result = self._fetch_with_camoufox(source, depth, doc_types, policy)
         else:
-            result = self._fetch_with_requests(source, depth, doc_types)
+            result = self._fetch_with_requests(source, depth, doc_types, policy)
 
         _cache[cache_key] = result
         return result
@@ -226,9 +243,13 @@ class CamoufoxPlugin(SourcePlugin):
     # ------------------------------------------------------------------
     # camoufox実装
     # ------------------------------------------------------------------
-    def _fetch_with_camoufox(self, start_url: str, depth: int, doc_types: set) -> dict:
+    def _fetch_with_camoufox(
+        self, start_url: str, depth: int, doc_types: set,
+        policy: FetchPolicy | None = None,
+    ) -> dict:
         from camoufox.sync_api import Camoufox
 
+        policy = policy or FetchPolicy()
         extractor = DocumentExtractor()
         visited   = set()
         pages     = []
@@ -247,6 +268,16 @@ class CamoufoxPlugin(SourcePlugin):
                 if url in visited:
                     continue
                 visited.add(url)
+
+                # Pre-flight SSRF check. Firefox does its own DNS so this is
+                # best-effort (see SECURITY.md) but it immediately rejects
+                # the common cases (literal metadata IPs, localhost, etc.)
+                # before Firefox even gets involved.
+                try:
+                    check_url(url, policy)
+                except UnsafeURLError as e:
+                    logger.warning(f"[camoufox] URL拒否: {e}")
+                    continue
 
                 try:
                     logger.info(f"[camoufox] 訪問 (depth={current_depth}): {url}")
@@ -276,19 +307,25 @@ class CamoufoxPlugin(SourcePlugin):
                     if current_depth < depth:
                         links = self._collect_links(soup, url, base_domain, doc_types)
                         for link_url, link_type in links:
-                            if link_url not in visited:
-                                if link_type in ("csv", "pdf", "png") and link_type in doc_types:
-                                    # ファイルは直接ダウンロード
-                                    file_content = self._download_file(
-                                        link_url, link_type, extractor
-                                    )
-                                    if file_content:
-                                        contents.append(file_content)
-                                        found_types.add(link_type)
-                                        visited.add(link_url)
-                                else:
-                                    # HTMLページはBFSキューに追加
-                                    queue.append((link_url, current_depth + 1))
+                            if link_url in visited:
+                                continue
+                            # Every queued URL must pass the SSRF policy;
+                            # reject early so we don't waste a Camoufox page.
+                            if not is_url_allowed(link_url, policy):
+                                logger.debug(f"[camoufox] リンク拒否 (policy): {link_url}")
+                                continue
+                            if link_type in ("csv", "pdf", "png") and link_type in doc_types:
+                                # ファイルは直接ダウンロード
+                                file_content = self._download_file(
+                                    link_url, link_type, extractor, policy=policy,
+                                )
+                                if file_content:
+                                    contents.append(file_content)
+                                    found_types.add(link_type)
+                                    visited.add(link_url)
+                            else:
+                                # HTMLページはBFSキューに追加
+                                queue.append((link_url, current_depth + 1))
 
                     if page_content:
                         combined = "\n".join(page_content)
@@ -309,7 +346,11 @@ class CamoufoxPlugin(SourcePlugin):
     # ------------------------------------------------------------------
     # requestsフォールバック実装
     # ------------------------------------------------------------------
-    def _fetch_with_requests(self, start_url: str, depth: int, doc_types: set) -> dict:
+    def _fetch_with_requests(
+        self, start_url: str, depth: int, doc_types: set,
+        policy: FetchPolicy | None = None,
+    ) -> dict:
+        policy = policy or FetchPolicy()
         extractor   = DocumentExtractor()
         visited     = set()
         pages       = []
@@ -329,7 +370,14 @@ class CamoufoxPlugin(SourcePlugin):
 
             try:
                 logger.info(f"[requests] 訪問 (depth={current_depth}): {url}")
-                resp = session.get(url, timeout=(5, 30))
+                try:
+                    resp = safe_get(url, policy=policy, session=session, timeout=(5, 30))
+                except UnsafeURLError as e:
+                    logger.warning(f"[requests] URL拒否: {e}")
+                    continue
+                except ResponseTooLargeError as e:
+                    logger.warning(f"[requests] レスポンス過大: {e}")
+                    continue
                 resp.raise_for_status()
                 resp.encoding = resp.apparent_encoding or "utf-8"
 
@@ -377,8 +425,12 @@ class CamoufoxPlugin(SourcePlugin):
                 if current_depth < depth:
                     links = self._collect_links(soup, url, base_domain, doc_types)
                     for link_url, link_type in links:
-                        if link_url not in visited:
-                            queue.append((link_url, current_depth + 1))
+                        if link_url in visited:
+                            continue
+                        if not is_url_allowed(link_url, policy):
+                            logger.debug(f"[requests] リンク拒否 (policy): {link_url}")
+                            continue
+                        queue.append((link_url, current_depth + 1))
 
                 if page_content:
                     combined = "\n".join(page_content)
@@ -450,9 +502,12 @@ class CamoufoxPlugin(SourcePlugin):
         url: str,
         file_type: str,
         extractor: DocumentExtractor,
+        *,
+        policy: FetchPolicy | None = None,
     ) -> str:
+        policy = policy or FetchPolicy()
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=(5, 30))
+            resp = safe_get(url, policy=policy, headers=HEADERS, timeout=(5, 30))
             resp.raise_for_status()
             if file_type == "csv":
                 return extractor.extract_csv_content(url, resp.content)
@@ -460,6 +515,10 @@ class CamoufoxPlugin(SourcePlugin):
                 return extractor.extract_pdf_content(url, resp.content)
             elif file_type == "png":
                 return f"\n### 画像: {url}"
+        except UnsafeURLError as e:
+            logger.warning(f"ファイルダウンロード URL拒否 ({url}): {e}")
+        except ResponseTooLargeError as e:
+            logger.warning(f"ファイルダウンロード 過大 ({url}): {e}")
         except Exception as e:
             logger.warning(f"ファイルダウンロードエラー ({url}): {e}")
         return ""
