@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 from app.database import get_connection
+from app.api._validation import parse_int
 
 results_bp = Blueprint("results", __name__)
 
@@ -17,10 +18,18 @@ def list_results():
     クイズセッション一覧を返す（generated_at降順）。
     クエリパラメータ ?document_id= でドキュメントIDフィルタが可能。
     """
-    document_id = request.args.get("document_id")
+    document_id_raw = request.args.get("document_id")
+    document_id: int | None = None
+    if document_id_raw is not None and document_id_raw != "":
+        document_id, err = parse_int(
+            document_id_raw, "document_id", min_val=1, max_val=2_147_483_647,
+        )
+        if err:
+            return jsonify({"error": err}), 400
+
     conn = get_connection()
     try:
-        if document_id:
+        if document_id is not None:
             rows = conn.execute(
                 """SELECT id, session_id, source_title, category, model,
                           question_count, difficulty, score_correct,
@@ -28,7 +37,7 @@ def list_results():
                    FROM quiz_sessions
                    WHERE document_id = ?
                    ORDER BY generated_at DESC""",
-                (int(document_id),),
+                (document_id,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -221,12 +230,25 @@ def save_answers(session_id: str):
     Body: {answers: {qId: "a"}, score_correct: N, score_total: N}
     """
     body = request.get_json(silent=True) or {}
-    answers       = body.get("answers", {})
-    score_correct = body.get("score_correct")
-    score_total   = body.get("score_total")
+    answers = body.get("answers", {})
+    if not isinstance(answers, dict) or not answers:
+        return jsonify({"error": "answers は非空の辞書で指定してください。"}), 400
 
-    if not answers:
-        return jsonify({"error": "answers は必須です。"}), 400
+    # score_correct / score_total are optional, but if present they must be
+    # non-negative integers. Reject non-numeric / negative values with 400
+    # so the DB never ingests something that later breaks aggregation.
+    score_correct, err = parse_int(
+        body.get("score_correct"), "score_correct",
+        default=0, min_val=0, max_val=1_000_000,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    score_total, err = parse_int(
+        body.get("score_total"), "score_total",
+        default=0, min_val=0, max_val=1_000_000,
+    )
+    if err:
+        return jsonify({"error": err}), 400
 
     conn = get_connection()
     try:

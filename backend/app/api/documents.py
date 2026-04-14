@@ -8,8 +8,17 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 from app.database import get_connection
+from app.api._validation import parse_int, parse_non_empty_str
 
 documents_bp = Blueprint("documents", __name__)
+
+# 1 MiB: upper bound for a single document body stored via this endpoint.
+# Anything larger is almost certainly a misuse or a bug (scraped content goes
+# through ContentService which already caps at MAX_CONTENT_CHARS).
+MAX_DOCUMENT_CONTENT_BYTES = 1 * 1024 * 1024
+MAX_TITLE_LEN = 512
+MAX_URL_LEN = 2048
+MAX_SOURCE_TYPE_LEN = 64
 
 
 @documents_bp.get("/documents")
@@ -117,15 +126,43 @@ def create_document():
     """
     body = request.get_json(silent=True) or {}
 
-    title       = body.get("title", "").strip()
-    url         = body.get("url", "").strip() or None
-    content     = body.get("content", "").strip()
-    source_type = body.get("source_type", "").strip()
-    page_count  = int(body.get("page_count", 1))
-    doc_types   = body.get("doc_types", [])
+    title, err = parse_non_empty_str(body.get("title"), "title", max_len=MAX_TITLE_LEN)
+    if err:
+        return jsonify({"error": err}), 400
 
-    if not title or not content or not source_type:
-        return jsonify({"error": "title, content, source_type は必須です。"}), 400
+    content, err = parse_non_empty_str(body.get("content"), "content")
+    if err:
+        return jsonify({"error": err}), 400
+    if len(content.encode("utf-8")) > MAX_DOCUMENT_CONTENT_BYTES:
+        return jsonify({
+            "error": f"content は {MAX_DOCUMENT_CONTENT_BYTES} バイト以内で指定してください。",
+        }), 413
+
+    source_type, err = parse_non_empty_str(
+        body.get("source_type"), "source_type", max_len=MAX_SOURCE_TYPE_LEN,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
+    raw_url = body.get("url")
+    url: str | None
+    if raw_url is None or raw_url == "":
+        url = None
+    elif isinstance(raw_url, str) and len(raw_url.strip()) <= MAX_URL_LEN:
+        url = raw_url.strip() or None
+    else:
+        return jsonify({"error": f"url は {MAX_URL_LEN} 文字以内の文字列で指定してください。"}), 400
+
+    page_count, err = parse_int(
+        body.get("page_count"), "page_count",
+        default=1, min_val=1, max_val=10_000,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
+    doc_types = body.get("doc_types", [])
+    if not isinstance(doc_types, list):
+        return jsonify({"error": "doc_types はリストで指定してください。"}), 400
 
     # content_hash 生成（URL + content の MD5）
     hash_source = (url or "") + content
