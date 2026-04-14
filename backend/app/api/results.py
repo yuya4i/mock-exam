@@ -79,6 +79,117 @@ def list_categories():
         conn.close()
 
 
+@results_bp.get("/results/categories/breakdown")
+def category_breakdown():
+    """
+    全カテゴリについて、知識レベル(K1-K4) × 難易度 別の正誤集計を返す。
+    個別問題単位で集計（セッション単位ではない）。
+
+    Response:
+    {
+      "categories": [
+        {
+          "category": "...",
+          "levels": {"K1": {correct, total, accuracy}, "K2": ..., "K3": ..., "K4": ...},
+          "difficulties": {"easy": {correct, total, accuracy}, "medium": ..., "hard": ...},
+          "topics": [{"topic": "...", "correct": N, "total": N, "accuracy": %}],
+          "total": {"correct": N, "total": N, "accuracy": %}
+        }
+      ]
+    }
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT category, difficulty, questions, user_answers
+               FROM quiz_sessions
+               WHERE category != '' AND user_answers IS NOT NULL"""
+        ).fetchall()
+
+        # カテゴリ毎に集計バケツを準備
+        from collections import defaultdict
+        def _empty_bucket():
+            return {"correct": 0, "total": 0}
+
+        cat_data = defaultdict(lambda: {
+            "levels":       defaultdict(_empty_bucket),
+            "difficulties": defaultdict(_empty_bucket),
+            "topics":       defaultdict(_empty_bucket),
+            "total":        _empty_bucket(),
+        })
+
+        for row in rows:
+            try:
+                questions = json.loads(row["questions"] or "[]")
+                answers   = json.loads(row["user_answers"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(questions, list) or not isinstance(answers, dict):
+                continue
+
+            cat  = row["category"]
+            diff = row["difficulty"] or "medium"
+            bucket = cat_data[cat]
+
+            for q in questions:
+                qid         = q.get("id")
+                level       = q.get("level", "K2")
+                topic       = q.get("topic", "その他")
+                correct_key = q.get("answer")
+                user_answer = answers.get(qid)
+                if user_answer is None:
+                    continue  # 未回答はカウントしない
+
+                is_correct = (user_answer == correct_key)
+                bucket["levels"][level]["total"] += 1
+                bucket["difficulties"][diff]["total"] += 1
+                bucket["topics"][topic]["total"] += 1
+                bucket["total"]["total"] += 1
+                if is_correct:
+                    bucket["levels"][level]["correct"] += 1
+                    bucket["difficulties"][diff]["correct"] += 1
+                    bucket["topics"][topic]["correct"] += 1
+                    bucket["total"]["correct"] += 1
+
+        def _with_accuracy(b):
+            b["accuracy"] = round(b["correct"] / b["total"] * 100) if b["total"] else 0
+            return b
+
+        # 全K1-K4・全難易度を埋めて返す（未出題なら accuracy=0, total=0）
+        result = []
+        for cat, data in cat_data.items():
+            levels_out = {
+                lv: _with_accuracy(dict(data["levels"][lv]))
+                for lv in ("K1", "K2", "K3", "K4")
+            }
+            diff_out = {
+                d: _with_accuracy(dict(data["difficulties"][d]))
+                for d in ("easy", "medium", "hard")
+            }
+            # トピックは上位10件（出題数順）
+            topics_sorted = sorted(
+                [{"topic": t, **dict(v)} for t, v in data["topics"].items()],
+                key=lambda x: x["total"],
+                reverse=True,
+            )[:10]
+            topics_out = [_with_accuracy(t) for t in topics_sorted]
+
+            result.append({
+                "category":     cat,
+                "levels":       levels_out,
+                "difficulties": diff_out,
+                "topics":       topics_out,
+                "total":        _with_accuracy(dict(data["total"])),
+            })
+
+        # 総回答数降順
+        result.sort(key=lambda c: c["total"]["total"], reverse=True)
+
+        return jsonify({"categories": result}), 200
+    finally:
+        conn.close()
+
+
 @results_bp.get("/results/<session_id>")
 def get_result(session_id: str):
     """セッション詳細（questions・answers含む）を返す。"""

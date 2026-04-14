@@ -19,30 +19,28 @@ VALID_DOC_TYPES = {"table", "csv", "pdf", "png"}
 
 
 def _derive_category(title: str, source_url: str) -> str:
-    """ソースタイトル/URLからカテゴリ名を推定する。"""
-    import re
-    # 既知のキーワードマッピング
-    keywords = {
-        "jstqb":    "JSTQB",
-        "istqb":    "ISTQB",
-        "ネットワークスペシャリスト": "ネットワークスペシャリスト",
-        "応用情報":  "応用情報技術者",
-        "基本情報":  "基本情報技術者",
-        "情報セキュリティ": "情報セキュリティ",
-        "データベーススペシャリスト": "データベーススペシャリスト",
-        "aws":      "AWS",
-        "azure":    "Azure",
-        "gcp":      "Google Cloud",
-        "python":   "Python",
-        "java":     "Java",
-        "javascript": "JavaScript",
-    }
-    combined = f"{title} {source_url}".lower()
-    for keyword, category in keywords.items():
-        if keyword in combined:
-            return category
-    # マッチしなければタイトルをそのままカテゴリに
-    return title if title else "その他"
+    """
+    ソースタイトル/URLからカテゴリ名を推定する汎用ロジック。
+    特定ドメインや資格名のハードコードはせず、タイトルとURLドメインから抽出する。
+
+    優先順位:
+    1. タイトル（空でなければそのまま使用、長すぎる場合は切り詰め）
+    2. URLのホスト名（タイトルが無い場合のフォールバック）
+    3. "その他"
+    """
+    if title and title.strip():
+        t = title.strip()
+        # タイトルが長すぎる場合は先頭40文字で切り詰め
+        return t if len(t) <= 40 else t[:40] + "…"
+
+    if source_url:
+        from urllib.parse import urlparse
+        host = urlparse(source_url).netloc
+        if host:
+            # www. プレフィックスを除去
+            return host.removeprefix("www.")
+
+    return "その他"
 
 
 def _save_quiz_session(result: dict, params: dict) -> None:

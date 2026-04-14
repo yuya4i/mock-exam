@@ -40,6 +40,24 @@ SYSTEM_PROMPT = """\
 6. **図表の活用**: 問題の理解を助けるためにグラフ・フローチャート・表などが
    有効な場合は、`diagram` フィールドにMermaid記法で図を記述してよい。
    不要であれば `diagram` は空文字列 "" にすること。
+   利用可能なMermaid記法:
+   - `graph TD` / `flowchart LR`: プロセス・分岐・フロー図
+   - `sequenceDiagram`: 処理シーケンス・通信手順
+   - `classDiagram`: クラス構造・継承関係
+   - `stateDiagram-v2`: 状態遷移
+   - `erDiagram`: エンティティ関係（DBスキーマ等）
+   - `gantt`: スケジュール・ガントチャート
+   - `pie`: 割合・円グラフ
+   - `gitGraph`: バージョン管理・ブランチ戦略
+   - `mindmap`: 概念マップ・階層構造
+   - `timeline`: 時系列・歴史的変遷
+   - `xychart-beta`: 散布図・折れ線グラフ・棒グラフ
+   - `quadrantChart`: 象限分析（重要度×緊急度 等）
+   - `journey`: ユーザージャーニー・体験マップ
+   - `requirementDiagram`: 要求事項の関連
+   - `sankey-beta`: 流量・遷移可視化
+   - `C4Context`: アーキテクチャコンテキスト図
+   問題内容に最適な記法を1つ選択すること（画一的に同じ記法を使わない）。
 
 ━━━ 出力形式（厳守） ━━━
 
@@ -324,8 +342,12 @@ class QuizService:
         first_line = d.split('\n')[0].strip().lower()
         valid_starts = (
             'graph ', 'flowchart ', 'sequencediagram', 'classdiagram',
-            'statediagram', 'erdiagram', 'gantt', 'pie', 'gitgraph',
-            'mindmap', 'timeline', 'xychart', 'block-beta',
+            'statediagram', 'statediagram-v2', 'erdiagram', 'gantt',
+            'pie', 'gitgraph', 'mindmap', 'timeline', 'xychart',
+            'xychart-beta', 'block-beta', 'quadrantchart', 'journey',
+            'requirementdiagram', 'sankey-beta', 'packet-beta',
+            'c4context', 'c4container', 'c4component', 'c4dynamic',
+            'architecture-beta',
         )
         if not any(first_line.startswith(s) for s in valid_starts):
             return ""
