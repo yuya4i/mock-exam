@@ -50,6 +50,38 @@
 
     <!-- 中央: 設定フォーム + 結果 -->
     <div class="center-column">
+      <!-- 選択中ドキュメントの生成済み問題セット -->
+      <div v-if="selectedDocId && (savedSessions.length > 0 || loadingSavedSessions)" class="card saved-sessions-panel">
+        <div class="saved-sessions-header">
+          <span class="saved-sessions-title">📚 この資料で生成済みの問題セット</span>
+          <span v-if="loadingSavedSessions" class="spinner" style="width:12px;height:12px"></span>
+          <span v-else class="saved-count">{{ savedSessions.length }}件</span>
+        </div>
+        <div class="saved-sessions-list">
+          <button
+            v-for="s in savedSessions"
+            :key="s.session_id"
+            class="saved-session-item"
+            :class="{ active: selectedSessionId === s.session_id }"
+            @click="loadSavedSession(s.session_id)"
+          >
+            <div class="saved-session-main">
+              <span class="saved-session-meta">{{ formatDate(s.generated_at) }}</span>
+              <span class="saved-session-model">🤖 {{ s.model }}</span>
+              <span class="saved-session-count">{{ s.question_count }}問</span>
+              <span class="saved-session-diff" :class="`diff-${s.difficulty}`">
+                {{ difficultyLabel(s.difficulty) }}
+              </span>
+            </div>
+            <div v-if="s.score_total" class="saved-session-score" :class="scoreColorClass(s.score_correct, s.score_total)">
+              {{ s.score_correct }}/{{ s.score_total }}
+              ({{ Math.round((s.score_correct / s.score_total) * 100) }}%)
+            </div>
+            <div v-else class="saved-session-score pending">未回答</div>
+          </button>
+        </div>
+      </div>
+
       <div class="card config-panel">
         <h2 class="section-title">問題生成設定</h2>
 
@@ -61,7 +93,7 @@
               <input
                 v-model="params.source"
                 class="form-input"
-                placeholder="https://jstqb.jp/syllabus.html または 直接テキストを入力..."
+                placeholder="https://example.com/docs または 直接テキストを入力..."
                 @keydown.enter="previewContent"
               />
               <button class="btn btn-secondary" @click="previewContent" :disabled="!params.source || previewing">
@@ -307,6 +339,7 @@
             :index="i"
             :user-answer="quizStore.userAnswers[q.id]"
             :revealed="quizStore.revealed[q.id]"
+            :source-info="quizStore.result.source_info"
             @answer="quizStore.setAnswer(q.id, $event)"
             @reveal="quizStore.revealAnswer(q.id)"
           />
@@ -374,15 +407,21 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { useQuizStore, useModelsStore, useDocumentsStore, useScrapeProgressStore } from '@/stores'
+import { useQuizStore, useModelsStore, useDocumentsStore, useScrapeProgressStore, useResultsStore } from '@/stores'
 import QuestionCard from '@/components/QuestionCard.vue'
 import api from '@/composables/useApi'
 
-const route       = useRoute()
-const quizStore   = useQuizStore()
-const modelsStore = useModelsStore()
-const docsStore   = useDocumentsStore()
-const scrapeStore = useScrapeProgressStore()
+const route        = useRoute()
+const quizStore    = useQuizStore()
+const modelsStore  = useModelsStore()
+const docsStore    = useDocumentsStore()
+const scrapeStore  = useScrapeProgressStore()
+const resultsStore = useResultsStore()
+
+// 選択中ドキュメントの生成済みセッション一覧
+const savedSessions = ref([])
+const loadingSavedSessions = ref(false)
+const selectedSessionId = ref(null)
 
 const params = ref({
   source:     '',
@@ -495,10 +534,50 @@ function sourceIcon(type) {
   return '📄'
 }
 
-function selectDocument(doc) {
+async function selectDocument(doc) {
   selectedDocId.value = doc.id
   params.value.source = doc.url || doc.title || ''
   sidebarMobileOpen.value = false
+
+  // 生成済みセッションを取得
+  savedSessions.value = []
+  selectedSessionId.value = null
+  loadingSavedSessions.value = true
+  try {
+    const res = await api.get('/results', { params: { document_id: doc.id } })
+    savedSessions.value = res.data.sessions || []
+  } catch (_) {
+    savedSessions.value = []
+  } finally {
+    loadingSavedSessions.value = false
+  }
+}
+
+async function loadSavedSession(sessionId) {
+  selectedSessionId.value = sessionId
+  try {
+    const data = await resultsStore.getSession(sessionId)
+    // quizStore.result の構造に合わせる
+    quizStore.result = {
+      session_id:  data.session_id,
+      model:       data.model,
+      questions:   data.questions || [],
+      source_info: data.source_info || {
+        title:      data.source_title,
+        type:       data.source_type,
+        source:     (documents.value.find(d => d.id === data.document_id) || {}).url,
+      },
+    }
+    // 保存済みの回答を復元
+    if (data.user_answers && typeof data.user_answers === 'object') {
+      quizStore.userAnswers = { ...data.user_answers }
+      Object.keys(data.user_answers).forEach((qid) => {
+        quizStore.revealed[qid] = true
+      })
+    }
+  } catch (e) {
+    console.warn('保存済みセッション読み込みエラー:', e)
+  }
 }
 
 async function refreshDocuments() {
@@ -514,6 +593,27 @@ function truncateUrl(url) {
   if (!url) return ''
   if (url.length <= 40) return url
   return url.substring(0, 37) + '...'
+}
+
+function formatDate(iso) {
+  if (!iso) return '-'
+  try {
+    return new Date(iso).toLocaleString('ja-JP', {
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    })
+  } catch (_) { return '-' }
+}
+
+function difficultyLabel(d) {
+  return { easy: '易', medium: '普', hard: '難' }[d] || d
+}
+
+function scoreColorClass(correct, total) {
+  if (!total) return ''
+  const pct = (correct / total) * 100
+  if (pct >= 70) return 'score-high'
+  if (pct >= 40) return 'score-mid'
+  return 'score-low'
 }
 
 function increaseDepth() {
@@ -595,6 +695,10 @@ watch(() => route.query.source, (newSource) => {
   flex-direction: column;
   overflow: hidden;
   transition: width 0.2s;
+  position: sticky;
+  top: 60px;
+  align-self: flex-start;
+  height: calc(100vh - 60px);
 }
 .sidebar.collapsed {
   width: 48px;
@@ -854,6 +958,96 @@ watch(() => route.query.source, (newSource) => {
 .generate-actions { display: flex; gap: 12px; margin-top: 20px; }
 .generate-btn { padding: 10px 28px; font-size: 14px; }
 
+/* ========== 保存済み問題セット ========== */
+.saved-sessions-panel { padding: 16px 20px; }
+.saved-sessions-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.saved-sessions-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1;
+}
+.saved-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  background: var(--bg-primary);
+  border-radius: 10px;
+}
+.saved-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.saved-session-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  transition: all 0.15s;
+}
+.saved-session-item:hover {
+  border-color: var(--accent);
+  background: rgba(99,102,241,0.05);
+}
+.saved-session-item.active {
+  border-color: var(--accent);
+  background: rgba(99,102,241,0.12);
+}
+.saved-session-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.saved-session-meta { color: var(--text-muted); }
+.saved-session-model {
+  color: var(--accent-hover);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+  white-space: nowrap;
+}
+.saved-session-count { color: var(--text-muted); }
+.saved-session-diff {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.diff-easy   { background: rgba(34,197,94,0.15);  color: var(--success); }
+.diff-medium { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.diff-hard   { background: rgba(239,68,68,0.15);  color: var(--danger); }
+
+.saved-session-score {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.saved-session-score.score-high { background: rgba(34,197,94,0.15);  color: var(--success); }
+.saved-session-score.score-mid  { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.saved-session-score.score-low  { background: rgba(239,68,68,0.15);  color: var(--danger); }
+.saved-session-score.pending    { background: var(--border);         color: var(--text-muted); }
+
 /* ========== ステップインジケーター ========== */
 .generating-steps { padding: 20px; }
 .steps-row {
@@ -967,6 +1161,10 @@ watch(() => route.query.source, (newSource) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: sticky;
+  top: 60px;
+  align-self: flex-start;
+  height: calc(100vh - 60px);
 }
 
 .progress-header {

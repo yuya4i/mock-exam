@@ -57,7 +57,15 @@
       <div class="explanation-header">📖 解説</div>
       <p class="explanation-text">{{ question.explanation }}</p>
       <div v-if="question.source_hint" class="source-hint">
-        📌 {{ question.source_hint }}
+        📌
+        <a
+          v-if="sourceLink"
+          :href="sourceLink"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="source-link"
+        >{{ question.source_hint }} から抜粋 ↗</a>
+        <span v-else>{{ question.source_hint }}</span>
       </div>
     </div>
   </div>
@@ -71,6 +79,30 @@ const props = defineProps({
   index:      { type: Number,  required: true },
   userAnswer: { type: String,  default: null  },
   revealed:   { type: Boolean, default: false },
+  sourceInfo: { type: Object,  default: null  },
+})
+
+// source_hint のテキストから該当ページURLを検索し、一致しなければソースURLへフォールバック
+const sourceLink = computed(() => {
+  const info = props.sourceInfo
+  const hint = props.question.source_hint
+  if (!info || !hint) return ''
+
+  if (Array.isArray(info.pages) && info.pages.length > 0) {
+    const lowerHint = hint.toLowerCase()
+    const matched = info.pages.find(
+      (p) => p.title && lowerHint.includes(p.title.toLowerCase())
+    ) || info.pages.find(
+      (p) => p.title && p.title.toLowerCase().includes(lowerHint.split(/[・\s]/)[0]?.toLowerCase() || '')
+    )
+    if (matched?.url) return matched.url
+  }
+
+  const src = info.source
+  if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
+    return src
+  }
+  return ''
 })
 
 defineEmits(['answer', 'reveal'])
@@ -238,5 +270,17 @@ function choiceClass(key) {
   color: var(--text-muted);
   padding-top: 8px;
   border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.source-link {
+  color: var(--accent-hover);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.source-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 </style>

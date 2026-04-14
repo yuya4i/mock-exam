@@ -286,6 +286,7 @@ export const useDocumentsStore = defineStore('documents', () => {
 export const useResultsStore = defineStore('results', () => {
   const sessions   = ref([])
   const categories = ref([])
+  const breakdown  = ref([])
   const loading    = ref(false)
   const error      = ref(null)
 
@@ -306,12 +307,14 @@ export const useResultsStore = defineStore('results', () => {
     loading.value = true
     error.value   = null
     try {
-      const [sessRes, catRes] = await Promise.all([
+      const [sessRes, catRes, bdRes] = await Promise.all([
         api.get('/results'),
         api.get('/results/categories'),
+        api.get('/results/categories/breakdown'),
       ])
       sessions.value   = sessRes.data.sessions   || []
       categories.value = catRes.data.categories   || []
+      breakdown.value  = bdRes.data.categories   || []
     } catch (e) {
       error.value = e.message
     } finally {
@@ -339,7 +342,7 @@ export const useResultsStore = defineStore('results', () => {
   }
 
   return {
-    sessions, categories, loading, error,
+    sessions, categories, breakdown, loading, error,
     totalSessions, averageScore, totalQuestions,
     fetchResults, getSession, saveAnswers, deleteSession,
   }

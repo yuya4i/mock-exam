@@ -50,7 +50,31 @@
         </div>
       </div>
 
-      <!-- レーダーチャート -->
+      <!-- 弱点推奨パネル -->
+      <div v-if="weakPoints.length > 0" class="card weak-points-panel">
+        <div class="weak-points-header">
+          <span class="weak-points-icon">🎯</span>
+          <h3 class="card-title" style="margin:0">強化推奨エリア</h3>
+          <span class="weak-points-hint">正答率が低い分野から優先的に復習しましょう</span>
+        </div>
+        <div class="weak-points-list">
+          <div
+            v-for="wp in weakPoints"
+            :key="`${wp.category}-${wp.level || wp.label}`"
+            class="weak-point-item"
+            :class="`priority-${wp.priority}`"
+          >
+            <span class="wp-priority">{{ priorityLabel(wp.priority) }}</span>
+            <span class="wp-category">{{ wp.category }}</span>
+            <span class="wp-detail">{{ wp.label }}</span>
+            <span class="wp-score" :class="scoreColor(wp.accuracy)">
+              {{ wp.correct }}/{{ wp.total }}問 ({{ wp.accuracy }}%)
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- カテゴリ別正答率レーダー（全カテゴリ比較） -->
       <div v-if="radarData" class="card radar-section">
         <h3 class="card-title">カテゴリ別正答率</h3>
         <div class="radar-container">
@@ -67,6 +91,59 @@
               {{ cat.total_correct }}/{{ cat.total_answered }}問
               <span :class="scoreColor(cat.accuracy)">({{ cat.accuracy }}%)</span>
             </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 各カテゴリ別レーダーチャート（K1-K4・難易度・トピック） -->
+      <div v-if="resultsStore.breakdown.length > 0" class="per-category-section">
+        <h3 class="sub-title">カテゴリ別詳細分析</h3>
+        <div class="per-cat-grid">
+          <div
+            v-for="cat in resultsStore.breakdown"
+            :key="cat.category"
+            class="card per-cat-card"
+          >
+            <div class="per-cat-header" @click="toggleCategory(cat.category)">
+              <span class="per-cat-name">{{ cat.category }}</span>
+              <span class="per-cat-total" :class="scoreColor(cat.total.accuracy)">
+                {{ cat.total.accuracy }}% ({{ cat.total.correct }}/{{ cat.total.total }})
+              </span>
+              <span class="expand-icon">{{ expandedCats[cat.category] ? '▼' : '▶' }}</span>
+            </div>
+            <div v-if="expandedCats[cat.category]" class="per-cat-body">
+              <!-- 知識レベル レーダー -->
+              <div class="per-cat-chart">
+                <div class="per-cat-chart-title">知識レベル別（K1〜K4）</div>
+                <div class="per-cat-radar-container">
+                  <Radar :data="levelRadarData(cat)" :options="smallRadarOptions" />
+                </div>
+              </div>
+              <!-- 難易度 レーダー -->
+              <div class="per-cat-chart" v-if="hasDifficultyData(cat)">
+                <div class="per-cat-chart-title">難易度別</div>
+                <div class="per-cat-radar-container">
+                  <Radar :data="difficultyRadarData(cat)" :options="smallRadarOptions" />
+                </div>
+              </div>
+              <!-- トピック別 -->
+              <div class="per-cat-chart full-span" v-if="cat.topics.length > 1">
+                <div class="per-cat-chart-title">トピック別正答率（上位 {{ cat.topics.length }}）</div>
+                <div class="topic-bars">
+                  <div v-for="t in cat.topics" :key="t.topic" class="topic-bar">
+                    <span class="topic-bar-label" :title="t.topic">{{ t.topic }}</span>
+                    <div class="topic-bar-track">
+                      <div
+                        class="topic-bar-fill"
+                        :class="scoreColor(t.accuracy)"
+                        :style="{ width: `${t.accuracy}%` }"
+                      ></div>
+                    </div>
+                    <span class="topic-bar-score">{{ t.correct }}/{{ t.total }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -130,6 +207,7 @@
                 :index="i"
                 :user-answer="q.user_answer || null"
                 :revealed="!!q.user_answer"
+                :source-info="sessionDetails[session.session_id].source_info"
               />
             </div>
           </div>
@@ -179,9 +257,133 @@ const resultsStore = useResultsStore()
 
 const filterCategory   = ref('')
 const expandedSessions = reactive({})
+const expandedCats     = reactive({})
 const sessionDetails   = reactive({})
 const deleteTarget     = ref(null)
 const deleting         = ref(false)
+
+// 弱点閾値（正答率がこれ未満なら強化推奨）
+const WEAK_THRESHOLD     = 60
+const MIN_QUESTIONS_FOR_WEAK = 3  // 最低この問題数が必要
+
+function toggleCategory(cat) {
+  expandedCats[cat] = !expandedCats[cat]
+}
+
+// レーダー色のパレット（カテゴリごとに色を割り当て）
+const RADAR_COLORS = [
+  { bg: 'rgba(99, 102, 241, 0.2)',  border: 'rgba(99, 102, 241, 0.9)'  },
+  { bg: 'rgba(34, 197, 94, 0.2)',   border: 'rgba(34, 197, 94, 0.9)'   },
+  { bg: 'rgba(251, 191, 36, 0.2)',  border: 'rgba(251, 191, 36, 0.9)'  },
+  { bg: 'rgba(239, 68, 68, 0.2)',   border: 'rgba(239, 68, 68, 0.9)'   },
+  { bg: 'rgba(168, 85, 247, 0.2)',  border: 'rgba(168, 85, 247, 0.9)'  },
+]
+
+function colorFor(cat) {
+  const idx = resultsStore.breakdown.findIndex((c) => c.category === cat.category)
+  return RADAR_COLORS[idx % RADAR_COLORS.length]
+}
+
+function levelRadarData(cat) {
+  const c = colorFor(cat)
+  const levels = ['K1', 'K2', 'K3', 'K4']
+  return {
+    labels: levels,
+    datasets: [{
+      label: `${cat.category} 正答率`,
+      data:  levels.map((lv) => cat.levels[lv]?.accuracy || 0),
+      backgroundColor: c.bg,
+      borderColor:     c.border,
+      borderWidth: 2,
+      pointBackgroundColor: c.border,
+      pointBorderColor: '#fff',
+      pointRadius: 3,
+    }],
+  }
+}
+
+function difficultyRadarData(cat) {
+  const c = colorFor(cat)
+  const diffs = [
+    { key: 'easy',   label: '易' },
+    { key: 'medium', label: '普' },
+    { key: 'hard',   label: '難' },
+  ]
+  return {
+    labels: diffs.map((d) => d.label),
+    datasets: [{
+      label: '正答率',
+      data:  diffs.map((d) => cat.difficulties[d.key]?.accuracy || 0),
+      backgroundColor: c.bg,
+      borderColor:     c.border,
+      borderWidth: 2,
+      pointBackgroundColor: c.border,
+      pointBorderColor: '#fff',
+      pointRadius: 3,
+    }],
+  }
+}
+
+function hasDifficultyData(cat) {
+  return Object.values(cat.difficulties).some((d) => d.total > 0)
+}
+
+const smallRadarOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  scales: {
+    r: {
+      min: 0, max: 100,
+      ticks: { stepSize: 25, color: '#94a3b8', backdropColor: 'transparent', font: { size: 10 } },
+      grid:       { color: 'rgba(51, 65, 85, 0.5)' },
+      angleLines: { color: 'rgba(51, 65, 85, 0.5)' },
+      pointLabels:{ color: '#f1f5f9', font: { size: 11, weight: '600' } },
+    },
+  },
+  plugins: {
+    legend: { display: false },
+    tooltip: { callbacks: { label: (ctx) => `${ctx.raw}%` } },
+  },
+}
+
+// 弱点ポイント抽出（カテゴリ×知識レベル で正答率が閾値未満のものをピックアップ）
+const weakPoints = computed(() => {
+  const items = []
+  for (const cat of resultsStore.breakdown) {
+    // カテゴリ全体が低い場合
+    if (cat.total.total >= MIN_QUESTIONS_FOR_WEAK && cat.total.accuracy < WEAK_THRESHOLD) {
+      items.push({
+        category: cat.category,
+        label:    '全体',
+        correct:  cat.total.correct,
+        total:    cat.total.total,
+        accuracy: cat.total.accuracy,
+        priority: cat.total.accuracy < 40 ? 'high' : 'mid',
+      })
+    }
+    // 特定のK-levelが低い場合
+    for (const lv of ['K1', 'K2', 'K3', 'K4']) {
+      const b = cat.levels[lv]
+      if (b.total >= MIN_QUESTIONS_FOR_WEAK && b.accuracy < WEAK_THRESHOLD) {
+        items.push({
+          category: cat.category,
+          label:    `${lv}`,
+          level:    lv,
+          correct:  b.correct,
+          total:    b.total,
+          accuracy: b.accuracy,
+          priority: b.accuracy < 40 ? 'high' : 'low',
+        })
+      }
+    }
+  }
+  // 正答率昇順（最も弱い順）、最大8件
+  return items.sort((a, b) => a.accuracy - b.accuracy).slice(0, 8)
+})
+
+function priorityLabel(p) {
+  return { high: '最優先', mid: '要注意', low: '改善推奨' }[p] || p
+}
 
 // ---- レーダーチャート ----
 const radarData = computed(() => {
@@ -401,6 +603,172 @@ onMounted(() => {
 
 .filter-row { display: flex; gap: 12px; }
 
+/* ========== 弱点推奨 ========== */
+.weak-points-panel { padding: 18px 20px; }
+.weak-points-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.weak-points-icon { font-size: 20px; }
+.weak-points-hint { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+
+.weak-points-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.weak-point-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border-left: 3px solid var(--border);
+  font-size: 12px;
+}
+.weak-point-item.priority-high { border-left-color: var(--danger);  background: rgba(239,68,68,0.06); }
+.weak-point-item.priority-mid  { border-left-color: var(--warning); background: rgba(251,191,36,0.06); }
+.weak-point-item.priority-low  { border-left-color: var(--accent);  background: rgba(99,102,241,0.04); }
+
+.wp-priority {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.priority-high .wp-priority { background: rgba(239,68,68,0.2);  color: var(--danger); }
+.priority-mid .wp-priority  { background: rgba(251,191,36,0.2); color: var(--warning); }
+.priority-low .wp-priority  { background: rgba(99,102,241,0.2); color: var(--accent-hover); }
+
+.wp-category {
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-detail {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.wp-score {
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ========== カテゴリ別詳細 ========== */
+.per-category-section { display: flex; flex-direction: column; gap: 10px; }
+
+.per-cat-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.per-cat-card { padding: 0; overflow: hidden; }
+
+.per-cat-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.per-cat-header:hover { background: rgba(255,255,255,0.02); }
+
+.per-cat-name {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.per-cat-total {
+  font-weight: 700;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+}
+
+.per-cat-body {
+  border-top: 1px solid var(--border);
+  padding: 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.per-cat-chart.full-span { grid-column: 1 / -1; }
+
+.per-cat-chart-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+  text-align: center;
+}
+.per-cat-radar-container {
+  position: relative;
+  height: 220px;
+  max-width: 280px;
+  margin: 0 auto;
+}
+
+/* トピック別バー */
+.topic-bars { display: flex; flex-direction: column; gap: 6px; }
+.topic-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.topic-bar-label {
+  flex-basis: 180px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.topic-bar-track {
+  flex: 1;
+  height: 10px;
+  background: var(--bg-primary);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.topic-bar-fill {
+  height: 100%;
+  transition: width 0.3s;
+}
+.topic-bar-fill.score-green  { background: var(--success); }
+.topic-bar-fill.score-yellow { background: var(--warning); }
+.topic-bar-fill.score-red    { background: var(--danger); }
+.topic-bar-score {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 50px;
+  text-align: right;
+}
+
 .loading-state { display: flex; align-items: center; gap: 12px; color: var(--text-muted); padding: 40px; justify-content: center; }
 
 .empty-state {
@@ -548,5 +916,10 @@ onMounted(() => {
   .session-header { flex-wrap: wrap; }
   .session-meta { min-width: auto; flex-basis: 100%; }
   .radar-container { height: 280px; }
+  .per-cat-body { grid-template-columns: 1fr; gap: 14px; }
+  .per-cat-radar-container { height: 200px; }
+  .topic-bar-label { flex-basis: 120px; font-size: 11px; }
+  .weak-point-item { flex-wrap: wrap; }
+  .wp-detail { order: 3; }
 }
 </style>
