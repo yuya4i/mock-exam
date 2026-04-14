@@ -18,6 +18,33 @@
       </div>
     </div>
 
+    <!-- API 認証トークン (任意) -->
+    <div class="card">
+      <h3 class="card-title">API 認証トークン (任意)</h3>
+      <p class="form-hint" style="margin-bottom:12px">
+        バックエンドで環境変数 <code>API_TOKEN</code> を設定している場合、
+        ここに同じ値を入力してください。空欄ならヘッダは付与されず、
+        バックエンドも未設定時はそのまま動作します (ローカル開発向け)。
+        詳細は <code>SECURITY.md</code> §6。
+      </p>
+      <div class="form-group">
+        <label class="form-label">API トークン</label>
+        <div class="url-row">
+          <input
+            v-model="apiToken"
+            class="form-input"
+            type="password"
+            autocomplete="off"
+            placeholder="空欄 = 認証なし"
+          />
+          <button class="btn btn-primary" @click="saveApiToken">保存</button>
+        </div>
+      </div>
+      <div v-if="tokenSaveMsg" :class="['alert', 'alert-success']" style="margin-top:12px">
+        {{ tokenSaveMsg }}
+      </div>
+    </div>
+
     <!-- 利用可能モデル一覧 -->
     <div class="card">
       <h3 class="card-title">インストール済みモデル</h3>
@@ -55,7 +82,6 @@
         <tr><td>バージョン</td><td>1.0.0</td></tr>
         <tr><td>フロントエンド</td><td>Vue.js 3 + Vite 6.4.2</td></tr>
         <tr><td>バックエンド</td><td>Flask 3.0 (Python 3.11)</td></tr>
-        <tr><td>HTTP クライアント</td><td>axios 1.15.0（CVE修正済み）</td></tr>
         <tr><td>AI エンジン</td><td>Ollama（ローカル）</td></tr>
       </table>
     </div>
@@ -71,7 +97,9 @@ const settingsStore = useSettingsStore()
 const modelsStore   = useModelsStore()
 
 const ollamaUrl  = ref(settingsStore.ollamaUrl)
+const apiToken   = ref(settingsStore.apiToken)
 const testResult = ref(null)
+const tokenSaveMsg = ref('')
 
 async function saveAndTest() {
   settingsStore.setOllamaUrl(ollamaUrl.value)
@@ -89,6 +117,15 @@ async function saveAndTest() {
   } catch (e) {
     testResult.value = { ok: false, message: `✗ ${e.message}` }
   }
+}
+
+function saveApiToken() {
+  settingsStore.setApiToken(apiToken.value)
+  tokenSaveMsg.value = apiToken.value
+    ? '✓ API トークンを保存しました。次回以降のリクエストに自動付与されます。'
+    : '✓ API トークンをクリアしました。認証なしで通信します。'
+  // 少し経ったら消す (短命な成功表示)
+  setTimeout(() => { tokenSaveMsg.value = '' }, 4000)
 }
 
 function formatSize(bytes) {

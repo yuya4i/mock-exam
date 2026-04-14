@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api from '@/composables/useApi'
+import api, { API_TOKEN_STORAGE_KEY } from '@/composables/useApi'
 
 // ======================================================================
 // 設定ストア
@@ -10,12 +10,27 @@ export const useSettingsStore = defineStore('settings', () => {
     localStorage.getItem('ollamaUrl') || 'http://localhost:11434'
   )
 
+  // API token: 未設定 (空) ならバックエンドの API_TOKEN も未設定前提。
+  // 設定時は useApi.js のリクエストインターセプターが自動で Authorization
+  // ヘッダに乗せる。機密値なので localStorage キーは共通定数で管理する。
+  const apiToken = ref(localStorage.getItem(API_TOKEN_STORAGE_KEY) || '')
+
   function setOllamaUrl(url) {
     ollamaUrl.value = url
     localStorage.setItem('ollamaUrl', url)
   }
 
-  return { ollamaUrl, setOllamaUrl }
+  function setApiToken(token) {
+    const trimmed = (token || '').trim()
+    apiToken.value = trimmed
+    if (trimmed) {
+      localStorage.setItem(API_TOKEN_STORAGE_KEY, trimmed)
+    } else {
+      localStorage.removeItem(API_TOKEN_STORAGE_KEY)
+    }
+  }
+
+  return { ollamaUrl, apiToken, setOllamaUrl, setApiToken }
 })
 
 // ======================================================================
@@ -114,10 +129,18 @@ export const useQuizStore = defineStore('quiz', () => {
 
     const baseUrl = api.defaults.baseURL || '/api'
 
+    // axios の interceptor は fetch() には効かないので手動で Authorization を付ける。
+    // localStorage の key は useApi.js の API_TOKEN_STORAGE_KEY と一致させる。
+    const storedToken = localStorage.getItem(API_TOKEN_STORAGE_KEY)
+    const requestHeaders = { 'Content-Type': 'application/json' }
+    if (storedToken && storedToken.trim()) {
+      requestHeaders.Authorization = `Bearer ${storedToken.trim()}`
+    }
+
     try {
       const response = await fetch(`${baseUrl}/quiz/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: requestHeaders,
         body: JSON.stringify(payload),
         signal: abortController.signal,
       })
@@ -398,6 +421,15 @@ export const useScrapeProgressStore = defineStore('scrapeProgress', () => {
       depth:     String(depth),
       doc_types: docTypes.join(','),
     })
+
+    // EventSource はカスタムヘッダ非対応のため、保存済み API_TOKEN は
+    // クエリパラメータ (api_token=) でフォールバック送信する。バックエンドの
+    // 認証ミドルウェアは /api/content/scrape-stream に限ってこの形を許可する。
+    // 参照: backend/app/security.py の _AUTH_QUERY_PARAM_PATHS。
+    const storedToken = localStorage.getItem(API_TOKEN_STORAGE_KEY)
+    if (storedToken && storedToken.trim()) {
+      params.append('api_token', storedToken.trim())
+    }
 
     eventSource = new EventSource(`${baseUrl}/content/scrape-stream?${params}`)
 

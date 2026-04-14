@@ -10,6 +10,7 @@ from app.api.history import history_bp
 from app.api.documents import documents_bp
 from app.api.results import results_bp
 from app.database import init_db
+from app.security import register_auth, warn_if_insecurely_exposed
 
 
 def create_app() -> Flask:
@@ -18,6 +19,9 @@ def create_app() -> Flask:
     # CORS設定（フロントエンドからのアクセスを許可）
     cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:1234").split(",")
     CORS(app, resources={r"/api/*": {"origins": cors_origins}})
+
+    # 認証ミドルウェア (API_TOKEN opt-in)。未設定ならこれまで通り素通り。
+    register_auth(app)
 
     # データベース初期化
     init_db()
@@ -30,6 +34,9 @@ def create_app() -> Flask:
     app.register_blueprint(history_bp,    url_prefix="/api")
     app.register_blueprint(documents_bp,  url_prefix="/api")
     app.register_blueprint(results_bp,    url_prefix="/api")
+
+    # 公開 bind + トークン未設定は高影響の踏み抜きパターンなので起動時に警告。
+    warn_if_insecurely_exposed()
 
     return app
 
