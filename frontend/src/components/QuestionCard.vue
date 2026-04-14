@@ -114,7 +114,89 @@ async function renderDiagram() {
   if (!props.question.diagram || !diagramEl.value) return
   try {
     const { default: mermaid } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')
-    mermaid.initialize({ startOnLoad: false, theme: 'dark' })
+    // base + themeVariables で全図種のテキストコントラストを明示制御。
+    // 'dark' プリセットは pie / journey / quadrant / sankey / C4 等で
+    // テキストが薄く読みにくくなる既知の問題があるため、自前で配色する。
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      fontFamily: "'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif",
+      themeVariables: {
+        // 全体カラー
+        background:           '#0f172a',  // --bg-primary
+        primaryColor:         '#1e293b',  // --bg-secondary（ノード塗り）
+        primaryTextColor:     '#f1f5f9',  // --text-primary（ノードテキスト）
+        primaryBorderColor:   '#6366f1',  // --accent
+        secondaryColor:       '#334155',  // --border
+        secondaryTextColor:   '#f1f5f9',
+        secondaryBorderColor: '#475569',
+        tertiaryColor:        '#1e293b',
+        tertiaryTextColor:    '#f1f5f9',
+        tertiaryBorderColor:  '#334155',
+
+        // 線・矢印
+        lineColor:            '#94a3b8',  // --text-muted（矢印・線）
+        textColor:            '#f1f5f9',  // 既定テキスト
+
+        // ノート
+        noteBkgColor:         '#3a2a10',
+        noteTextColor:        '#fbbf24',
+        noteBorderColor:      '#fbbf24',
+
+        // sequenceDiagram
+        actorBkg:             '#1e293b',
+        actorBorder:          '#6366f1',
+        actorTextColor:       '#f1f5f9',
+        actorLineColor:       '#94a3b8',
+        signalColor:          '#f1f5f9',
+        signalTextColor:      '#f1f5f9',
+        labelBoxBkgColor:     '#1e293b',
+        labelBoxBorderColor:  '#6366f1',
+        labelTextColor:       '#f1f5f9',
+        loopTextColor:        '#f1f5f9',
+        activationBkgColor:   '#334155',
+        activationBorderColor:'#6366f1',
+        sequenceNumberColor:  '#0f172a',
+
+        // gantt
+        sectionBkgColor:      '#1e293b',
+        altSectionBkgColor:   '#0f172a',
+        sectionBkgColor2:     '#334155',
+        taskBkgColor:         '#6366f1',
+        taskTextColor:        '#f1f5f9',
+        taskTextLightColor:   '#f1f5f9',
+        taskTextOutsideColor: '#f1f5f9',
+        taskTextDarkColor:    '#0f172a',
+        gridColor:            '#334155',
+        todayLineColor:       '#ef4444',
+
+        // pie
+        pie1: '#6366f1', pie2: '#22c55e', pie3: '#fbbf24', pie4: '#ef4444',
+        pie5: '#a855f7', pie6: '#06b6d4', pie7: '#f97316', pie8: '#84cc16',
+        pie9: '#ec4899', pie10:'#14b8a6', pie11:'#eab308', pie12:'#f43f5e',
+        pieTitleTextColor:    '#f1f5f9',
+        pieSectionTextColor:  '#0f172a',  // 扇内（明色背景）は暗テキスト
+        pieLegendTextColor:   '#f1f5f9',
+        pieStrokeColor:       '#0f172a',
+        pieOuterStrokeColor:  '#475569',
+
+        // state diagram
+        labelColor:           '#f1f5f9',
+        altBackground:        '#0f172a',
+
+        // class diagram
+        classText:            '#f1f5f9',
+
+        // journey / quadrant
+        fillType0: '#6366f1', fillType1: '#22c55e', fillType2: '#fbbf24',
+        fillType3: '#ef4444', fillType4: '#a855f7', fillType5: '#06b6d4',
+        fillType6: '#f97316', fillType7: '#84cc16',
+
+        // ER diagram
+        attributeBackgroundColorOdd:  '#1e293b',
+        attributeBackgroundColorEven: '#0f172a',
+      },
+    })
     const id = `mermaid-${props.question.id}`
     const { svg } = await mermaid.render(id, props.question.diagram)
     // mermaid.render はサニタイズ済みSVGを返す
@@ -185,6 +267,53 @@ function choiceClass(key) {
 .q-diagram :deep(svg) {
   max-width: 100%;
   height: auto;
+}
+
+/* ---- Mermaid テキスト可読性の安全網 ----
+   themeVariables でカバーしきれない要素（特にpie/journey/sankeyの内部ラベル）
+   に対して、暗背景でも読める明色テキストを強制する。 */
+.q-diagram :deep(svg text),
+.q-diagram :deep(svg .nodeLabel),
+.q-diagram :deep(svg .edgeLabel),
+.q-diagram :deep(svg .label) {
+  fill: #f1f5f9 !important;
+  color: #f1f5f9 !important;
+}
+.q-diagram :deep(svg .edgeLabel) {
+  background-color: #1e293b !important;
+}
+.q-diagram :deep(svg .edgeLabel rect) {
+  fill: #1e293b !important;
+  opacity: 0.92;
+}
+/* pie 内ラベル（扇内）は背景が明色なので暗いテキスト */
+.q-diagram :deep(svg .pieCircle ~ text),
+.q-diagram :deep(svg text.slice) {
+  fill: #0f172a !important;
+}
+/* legend テキストは図外なので明色 */
+.q-diagram :deep(svg g.legend text),
+.q-diagram :deep(svg .legend text) {
+  fill: #f1f5f9 !important;
+}
+/* sequenceDiagram のメッセージテキスト */
+.q-diagram :deep(svg .messageText),
+.q-diagram :deep(svg .noteText),
+.q-diagram :deep(svg .actor-line + text),
+.q-diagram :deep(svg text.actor) {
+  fill: #f1f5f9 !important;
+  stroke: none !important;
+}
+/* gantt: タスクテキストの白背景化を防ぐ */
+.q-diagram :deep(svg .taskText),
+.q-diagram :deep(svg .taskTextOutsideRight),
+.q-diagram :deep(svg .taskTextOutsideLeft) {
+  fill: #f1f5f9 !important;
+}
+/* journey diagram のセクション/タスクラベル */
+.q-diagram :deep(svg .section),
+.q-diagram :deep(svg .face) {
+  stroke: #6366f1 !important;
 }
 .diagram-fallback {
   font-size: 11px;
