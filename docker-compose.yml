@@ -14,6 +14,17 @@ services:
       - FLASK_ENV=${FLASK_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:1234}
       - HISTORY_FILE=/app/.cache/history.json
+      # Phase 0/1 hardening knobs (all optional, see SECURITY.md):
+      #   API_TOKEN               — when set, /api/* requires Bearer auth
+      #   ALLOW_HTTP              — allow http:// URLs for scraping
+      #   ALLOW_PRIVATE_NETWORKS  — allow RFC1918/loopback/link-local
+      #   MAX_FETCH_BYTES         — per-request body cap (default 10 MiB)
+      #   MAX_REDIRECTS           — per-request redirect cap (default 3)
+      - API_TOKEN=${API_TOKEN:-}
+      - ALLOW_HTTP=${ALLOW_HTTP:-}
+      - ALLOW_PRIVATE_NETWORKS=${ALLOW_PRIVATE_NETWORKS:-}
+      - MAX_FETCH_BYTES=${MAX_FETCH_BYTES:-}
+      - MAX_REDIRECTS=${MAX_REDIRECTS:-}
     volumes:
       - quiz-cache:/app/.cache
     extra_hosts:
