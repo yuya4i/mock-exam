@@ -162,15 +162,22 @@ def scrape_stream():
 
         except Exception as e:
             logger.error(f"スクレイピングストリームエラー: {e}", exc_info=True)
-            yield _sse_event("error_event", {"message": str(e)})
+            # NOTE: event name "error" is intentionally shared with /api/quiz/generate
+            # so the SSE event contract is uniform across endpoints. EventSource
+            # dispatches server-sent "error" events and native connection errors
+            # to the same DOM handler; disambiguate by checking e.data on the
+            # client (see frontend/src/stores/index.js).
+            yield _sse_event("error", {"message": str(e)})
 
     return Response(
         stream_with_context(event_stream()),
         mimetype="text/event-stream",
         headers={
-            "Cache-Control":               "no-cache",
-            "X-Accel-Buffering":           "no",
-            "Access-Control-Allow-Origin": "*",
+            # CORS is governed centrally by flask-cors (app factory in
+            # app/__init__.py). Do NOT mix a wildcard Access-Control-Allow-Origin
+            # here — it previously contradicted the CORS_ORIGINS allowlist.
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",
         },
     )
 
