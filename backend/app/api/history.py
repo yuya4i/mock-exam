@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request
 from app.services.history_service import get_history_service
+from app.api._validation import parse_int
 
 history_bp = Blueprint("history", __name__)
 _history_service = get_history_service()
@@ -7,8 +8,20 @@ _history_service = get_history_service()
 
 @history_bp.get("/history")
 def list_history():
-    limit  = int(request.args.get("limit",  20))
-    offset = int(request.args.get("offset",  0))
+    limit, err = parse_int(
+        request.args.get("limit"), "limit",
+        default=20, min_val=1, max_val=200,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
+    offset, err = parse_int(
+        request.args.get("offset"), "offset",
+        default=0, min_val=0, max_val=10_000,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
     return jsonify(_history_service.list(limit=limit, offset=offset)), 200
 
 

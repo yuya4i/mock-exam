@@ -8,6 +8,12 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 from app.services.quiz_service import QuizService
 from app.services.history_service import get_history_service
 from app.services.content_service import MAX_DEPTH
+from app.api._validation import (
+    parse_int,
+    parse_non_empty_str,
+    parse_str_enum,
+    parse_str_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +21,11 @@ quiz_bp = Blueprint("quiz", __name__)
 _quiz_service = QuizService()
 _history_service = get_history_service()
 
-VALID_DOC_TYPES = {"table", "csv", "pdf", "png"}
+VALID_DOC_TYPES = ["table", "csv", "pdf", "png"]
+VALID_LEVELS = ["K1", "K2", "K3", "K4"]
+VALID_DIFFICULTIES = ["easy", "medium", "hard"]
+DEFAULT_LEVELS = ["K2", "K3", "K4"]
+DEFAULT_DIFFICULTY = "medium"
 
 
 def _derive_category(title: str, source_url: str) -> str:
@@ -80,40 +90,57 @@ def _save_quiz_session(result: dict, params: dict) -> None:
         logger.warning(f"クイズセッションDB保存エラー: {e}")
 
 
-def _parse_request(body: dict) -> dict:
-    """リクエストボディを検証・パースして返す。"""
-    source = body.get("source", "").strip()
-    if not source:
-        raise ValueError("source は必須です。")
+def _parse_request(body: dict) -> tuple[dict | None, str | None]:
+    """リクエストボディを検証・パースして返す。
 
-    model = body.get("model", "").strip()
-    if not model:
-        raise ValueError("model は必須です。")
+    Returns:
+        ``(params, None)`` on success, ``(None, error_message)`` on failure.
+        Error messages are safe to surface to the client as-is.
+    """
+    source, err = parse_non_empty_str(body.get("source"), "source", max_len=2048)
+    if err:
+        return None, err
 
-    count = int(body.get("count", 5))
-    if not (1 <= count <= 20):
-        raise ValueError("count は 1〜20 の範囲で指定してください。")
+    model, err = parse_non_empty_str(body.get("model"), "model", max_len=256)
+    if err:
+        return None, err
 
-    levels = body.get("levels", ["K2", "K3", "K4"])
-    valid_levels = {"K1", "K2", "K3", "K4"}
-    levels = [lv for lv in levels if lv in valid_levels] or ["K2", "K3", "K4"]
+    count, err = parse_int(
+        body.get("count"), "count", default=5, min_val=1, max_val=20,
+    )
+    if err:
+        return None, err
 
-    difficulty = body.get("difficulty", "medium")
-    if difficulty not in ("easy", "medium", "hard"):
-        difficulty = "medium"
+    depth, err = parse_int(
+        body.get("depth"), "depth", default=1, min_val=1, max_val=MAX_DEPTH,
+    )
+    if err:
+        return None, err
 
-    depth = int(body.get("depth", 1))
-    if not (1 <= depth <= MAX_DEPTH):
-        raise ValueError(f"depth は 1〜{MAX_DEPTH} の範囲で指定してください。")
+    levels, err = parse_str_list(
+        body.get("levels"), "levels",
+        allowed=VALID_LEVELS, default=DEFAULT_LEVELS,
+    )
+    if err:
+        return None, err
 
-    doc_types = body.get("doc_types", ["table", "csv", "pdf", "png"])
-    if not isinstance(doc_types, list) or not doc_types:
-        raise ValueError("doc_types は空でないリストで指定してください。")
-    doc_types = [dt for dt in doc_types if dt in VALID_DOC_TYPES]
-    if not doc_types:
-        doc_types = ["table", "csv", "pdf", "png"]
+    difficulty, err = parse_str_enum(
+        body.get("difficulty"), "difficulty",
+        allowed=VALID_DIFFICULTIES, default=DEFAULT_DIFFICULTY,
+    )
+    if err:
+        return None, err
+
+    doc_types, err = parse_str_list(
+        body.get("doc_types"), "doc_types",
+        allowed=VALID_DOC_TYPES, default=list(VALID_DOC_TYPES),
+    )
+    if err:
+        return None, err
 
     ollama_options = body.get("ollama_options", {})
+    if not isinstance(ollama_options, dict):
+        return None, "ollama_options は辞書形式で指定してください。"
 
     return {
         "source":         source,
@@ -124,7 +151,7 @@ def _parse_request(body: dict) -> dict:
         "depth":          depth,
         "doc_types":      doc_types,
         "ollama_options": ollama_options,
-    }
+    }, None
 
 
 def _sse(event: str, data: dict) -> str:
@@ -139,10 +166,9 @@ def _sse(event: str, data: dict) -> str:
 @quiz_bp.post("/quiz/generate")
 def generate_quiz():
     body = request.get_json(silent=True) or {}
-    try:
-        params = _parse_request(body)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    params, err = _parse_request(body)
+    if err:
+        return jsonify({"error": err}), 400
 
     def event_stream():
         try:

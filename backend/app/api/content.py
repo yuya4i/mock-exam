@@ -6,11 +6,46 @@ import json
 import logging
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 from app.services.content_service import ContentService, MAX_DEPTH
+from app.api._validation import parse_int, parse_non_empty_str, parse_str_list
 
 logger = logging.getLogger(__name__)
 
 content_bp = Blueprint("content", __name__)
 _content_service = ContentService()
+
+VALID_DOC_TYPES = ["table", "csv", "pdf", "png"]
+DEFAULT_DOC_TYPES = ["table", "csv", "pdf", "png"]
+
+
+def _parse_common_fetch_params(
+    source_raw,
+    depth_raw,
+    doc_types_raw,
+) -> tuple[dict | None, str | None]:
+    """Validate the (source, depth, doc_types) triple used by all three
+    content endpoints. Returns ``(params, None)`` on success or
+    ``(None, error_message)`` on the first validation failure.
+    """
+    source, err = parse_non_empty_str(source_raw, "source", max_len=2048)
+    if err:
+        return None, err
+
+    depth, err = parse_int(
+        depth_raw, "depth", default=1, min_val=1, max_val=MAX_DEPTH,
+    )
+    if err:
+        return None, err
+
+    doc_types, err = parse_str_list(
+        doc_types_raw,
+        "doc_types",
+        allowed=VALID_DOC_TYPES,
+        default=DEFAULT_DOC_TYPES,
+    )
+    if err:
+        return None, err
+
+    return {"source": source, "depth": depth, "doc_types": doc_types}, None
 
 
 @content_bp.post("/content/preview")
@@ -24,31 +59,25 @@ def preview_content():
         depth     (int):  スクレイピング階層数 1〜8（デフォルト: 1）
         doc_types (list): 対象ドキュメント種別（デフォルト: ["table","csv","pdf","png"]）
     """
-    body      = request.get_json(silent=True) or {}
-    source    = body.get("source", "").strip()
-    depth     = int(body.get("depth", 1))
-    doc_types = body.get("doc_types", ["table", "csv", "pdf", "png"])
-
-    if not source:
-        return jsonify({"error": "source は必須です。"}), 400
-
-    if not (1 <= depth <= MAX_DEPTH):
-        return jsonify({"error": f"depth は 1〜{MAX_DEPTH} の範囲で指定してください。"}), 400
-
-    if not isinstance(doc_types, list) or not doc_types:
-        return jsonify({"error": "doc_types は空でないリストで指定してください。"}), 400
+    body = request.get_json(silent=True) or {}
+    params, err = _parse_common_fetch_params(
+        body.get("source"), body.get("depth"), body.get("doc_types"),
+    )
+    if err:
+        return jsonify({"error": err}), 400
 
     try:
         result = _content_service.preview(
-            source,
+            params["source"],
             max_chars=600,
-            depth=depth,
-            doc_types=doc_types,
+            depth=params["depth"],
+            doc_types=params["doc_types"],
         )
         return jsonify(result), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
     except Exception as e:
+        logger.error(f"コンテンツ取得エラー: {e}", exc_info=True)
         return jsonify({"error": f"コンテンツ取得エラー: {e}"}), 500
 
 
@@ -62,23 +91,24 @@ def fetch_content():
         depth     (int):  スクレイピング階層数 1〜8（デフォルト: 1）
         doc_types (list): 対象ドキュメント種別（デフォルト: ["table","csv","pdf","png"]）
     """
-    body      = request.get_json(silent=True) or {}
-    source    = body.get("source", "").strip()
-    depth     = int(body.get("depth", 1))
-    doc_types = body.get("doc_types", ["table", "csv", "pdf", "png"])
-
-    if not source:
-        return jsonify({"error": "source は必須です。"}), 400
-
-    if not (1 <= depth <= MAX_DEPTH):
-        return jsonify({"error": f"depth は 1〜{MAX_DEPTH} の範囲で指定してください。"}), 400
+    body = request.get_json(silent=True) or {}
+    params, err = _parse_common_fetch_params(
+        body.get("source"), body.get("depth"), body.get("doc_types"),
+    )
+    if err:
+        return jsonify({"error": err}), 400
 
     try:
-        result = _content_service.fetch(source, depth=depth, doc_types=doc_types)
+        result = _content_service.fetch(
+            params["source"],
+            depth=params["depth"],
+            doc_types=params["doc_types"],
+        )
         return jsonify(result), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
     except Exception as e:
+        logger.error(f"コンテンツ取得エラー: {e}", exc_info=True)
         return jsonify({"error": f"コンテンツ取得エラー: {e}"}), 500
 
 
@@ -93,29 +123,27 @@ def scrape_stream():
         depth     (int):  スクレイピング階層数 1〜8（デフォルト: 1）
         doc_types (str):  カンマ区切りのドキュメント種別（デフォルト: "table,csv,pdf,png"）
     """
-    source    = request.args.get("source", "").strip()
-    depth     = int(request.args.get("depth", 1))
-    doc_types_raw = request.args.get("doc_types", "table,csv,pdf,png")
-    doc_types = [dt.strip() for dt in doc_types_raw.split(",") if dt.strip()]
+    params, err = _parse_common_fetch_params(
+        request.args.get("source"),
+        request.args.get("depth"),
+        request.args.get("doc_types"),
+    )
+    if err:
+        return jsonify({"error": err}), 400
 
-    if not source:
-        return jsonify({"error": "source は必須です。"}), 400
-
-    if not (1 <= depth <= MAX_DEPTH):
-        return jsonify({"error": f"depth は 1〜{MAX_DEPTH} の範囲で指定してください。"}), 400
+    source = params["source"]
+    depth = params["depth"]
+    doc_types = params["doc_types"]
 
     def event_stream():
         try:
-            # 進捗イベント送信
             yield _sse_event("progress", {
                 "url": source, "depth": 0,
                 "status": "starting", "pages_found": 0, "total_visited": 0,
             })
 
-            # 実際のスクレイピング実行
             result = _content_service.fetch(source, depth=depth, doc_types=doc_types)
 
-            # ページ情報から進捗イベントを生成
             pages = result.get("pages", [])
             for i, page in enumerate(pages, 1):
                 yield _sse_event("progress", {
@@ -126,7 +154,6 @@ def scrape_stream():
                     "total_visited": i,
                 })
 
-            # 完了イベント
             yield _sse_event("done", {
                 "document_id": result.get("document_id"),
                 "title":       result.get("title", ""),
@@ -134,7 +161,7 @@ def scrape_stream():
             })
 
         except Exception as e:
-            logger.error(f"スクレイピングストリームエラー: {e}")
+            logger.error(f"スクレイピングストリームエラー: {e}", exc_info=True)
             yield _sse_event("error_event", {"message": str(e)})
 
     return Response(
