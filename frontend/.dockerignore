@@ -1,4 +1,25 @@
-node_modules
-dist
-*.log
+# ============================================================
+# frontend/.dockerignore
+# Applied when `docker compose build frontend` / `docker build` is
+# run with context=./frontend (see docker-compose*.yml).
+# ============================================================
+
+# --- secrets ---
 .env
+.env.*
+secrets/
+
+# --- Node ---
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# --- editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
