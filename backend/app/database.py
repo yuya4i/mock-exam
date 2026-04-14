@@ -7,9 +7,13 @@ import sqlite3
 import logging
 from pathlib import Path
 
+from app.paths import resolve_data_path
+
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.getenv("DB_PATH", "/app/.cache/quizgen.db")
+# Resolve at import (cheap) so module-level callers see a consistent path.
+# Operators can still override per-process via DB_PATH.
+DB_PATH = resolve_data_path("DB_PATH", "quizgen.db")
 
 
 def get_connection() -> sqlite3.Connection:

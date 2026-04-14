@@ -45,11 +45,10 @@ jobs:
           pip install -r backend/requirements.txt pytest
 
       - name: Run pytest
-        env:
-          # conftest.py also sets these as defaults, but make CI explicit
-          # so a future conftest refactor doesn't silently break the run.
-          DB_PATH: /tmp/quiz_ci.db
-          HISTORY_FILE: /tmp/quiz_ci_history.json
+        # P1-D made data paths env-aware (see app/paths.py): when /app/.cache
+        # is unwritable, defaults fall back to <tmp>/quizgen/. CI runners
+        # don't have /app, so this branch is exercised on every run — and
+        # we no longer need to stub DB_PATH/HISTORY_FILE here.
         run: |
           cd backend
           python -m pytest tests/ -v --color=yes
