@@ -102,6 +102,25 @@
               </button>
             </div>
 
+            <!-- 既取得URL通知 -->
+            <div v-if="existingDocument" class="alert alert-info already-scraped-notice">
+              <div class="already-scraped-title">
+                ⚠ このURLは既に取得済みです
+              </div>
+              <div class="already-scraped-meta">
+                <span>📅 {{ formatScrapedAt(existingDocument.scraped_at) }} 取得</span>
+                <span>📄 {{ existingDocument.page_count || 1 }} ページ</span>
+              </div>
+              <div class="already-scraped-actions">
+                <button class="btn btn-primary" @click="useExistingDocument">
+                  保存済みデータを使う
+                </button>
+                <button class="btn btn-secondary" @click="dismissExistingDocument">
+                  再スクレイピング
+                </button>
+              </div>
+            </div>
+
             <!-- スクレイピング詳細設定（URLの場合のみ表示） -->
             <div v-if="isUrl" class="scrape-options">
               <div class="scrape-row">
@@ -453,6 +472,12 @@ const preview      = ref(null)
 const previewError = ref(null)
 const previewing   = ref(false)
 
+// 既に取得済みURLの検出結果
+const existingDocument = ref(null)
+let existingDocumentTimer = null
+// 「保存済みデータを使う」「再スクレイピング」実行直後は再検知を抑止するURL
+let suppressedUrl = null
+
 // サイドバー状態
 const sidebarCollapsed  = ref(false)
 const sidebarMobileOpen = ref(false)
@@ -675,6 +700,65 @@ watch(() => route.query.source, (newSource) => {
     params.value.source = newSource
   }
 })
+
+// ---- 既取得URL検出 ----
+function formatScrapedAt(iso) {
+  if (!iso) return '-'
+  try {
+    const d = new Date(iso)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${y}/${m}/${day} ${hh}:${mm}`
+  } catch (_) { return '-' }
+}
+
+async function checkExistingUrl(url) {
+  try {
+    const res = await api.get('/documents/by-url', { params: { url } })
+    existingDocument.value = res.data
+  } catch (_) {
+    existingDocument.value = null
+  }
+}
+
+function useExistingDocument() {
+  if (!existingDocument.value) return
+  // selectDocument は params.source を上書きするため、以後の再検知を抑止する
+  suppressedUrl = (existingDocument.value.url || '').trim()
+  selectDocument(existingDocument.value)
+  existingDocument.value = null
+}
+
+function dismissExistingDocument() {
+  // 同一URLのままなら再表示しないよう抑止URLに登録
+  suppressedUrl = (params.value.source || '').trim()
+  existingDocument.value = null
+}
+
+// params.source を600msデバウンスで監視
+watch(() => params.value.source, (newVal) => {
+  if (existingDocumentTimer) {
+    clearTimeout(existingDocumentTimer)
+    existingDocumentTimer = null
+  }
+  const src = (newVal || '').trim()
+  // URL形式でない、または短すぎる場合は通知をクリア
+  if (!/^https?:\/\//.test(src) || src.length <= 8) {
+    existingDocument.value = null
+    return
+  }
+  // 抑止URLと一致するなら検知しない。URLが変わった時点で抑止を解除する。
+  if (suppressedUrl && src === suppressedUrl) {
+    return
+  }
+  suppressedUrl = null
+  existingDocumentTimer = setTimeout(() => {
+    checkExistingUrl(src)
+  }, 600)
+})
 </script>
 
 <style scoped>
@@ -827,6 +911,35 @@ watch(() => route.query.source, (newSource) => {
 
 .source-input-row { display: flex; gap: 8px; }
 .source-input-row .form-input { flex: 1; }
+
+/* ---- 既取得URL通知 ---- */
+.already-scraped-notice {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.already-scraped-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+.already-scraped-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+.already-scraped-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.already-scraped-actions .btn {
+  font-size: 12px;
+  padding: 6px 12px;
+}
 
 /* ---- スクレイピングオプション ---- */
 .scrape-options {

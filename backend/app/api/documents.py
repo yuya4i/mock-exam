@@ -52,6 +52,41 @@ def list_documents():
         conn.close()
 
 
+@documents_bp.get("/documents/by-url")
+def get_document_by_url():
+    """
+    URLの完全一致でドキュメントを検索する。
+    クエリパラメータ ?url=<exact_url> を必須とし、見つかった場合は
+    メタ情報（id, title, url, source_type, page_count, doc_types, scraped_at）を返す。
+    """
+    url = request.args.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "url パラメータは必須です。"}), 400
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """SELECT id, title, url, source_type, page_count, doc_types, scraped_at
+               FROM documents
+               WHERE url = ?
+               ORDER BY scraped_at DESC
+               LIMIT 1""",
+            (url,),
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "見つかりません"}), 404
+
+        doc = dict(row)
+        if doc.get("doc_types"):
+            try:
+                doc["doc_types"] = json.loads(doc["doc_types"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return jsonify(doc), 200
+    finally:
+        conn.close()
+
+
 @documents_bp.get("/documents/<int:doc_id>")
 def get_document(doc_id: int):
     """ドキュメント詳細（content含む）を返す。"""
