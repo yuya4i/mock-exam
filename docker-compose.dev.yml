@@ -13,7 +13,6 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - FLASK_ENV=development
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:1234}
-      - HISTORY_FILE=/app/.cache/history.json
       - PYTHONUNBUFFERED=1
       # Hardening knobs (see SECURITY.md) — pass through for dev testing
       - API_TOKEN=${API_TOKEN:-}

@@ -6,7 +6,6 @@ import json
 import logging
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 from app.services.quiz_service import QuizService
-from app.services.history_service import get_history_service
 from app.services.content_service import MAX_DEPTH
 from app.api._validation import (
     parse_int,
@@ -19,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 quiz_bp = Blueprint("quiz", __name__)
 _quiz_service = QuizService()
-_history_service = get_history_service()
 
 VALID_DOC_TYPES = ["table", "csv", "pdf", "png"]
 VALID_LEVELS = ["K1", "K2", "K3", "K4"]
@@ -176,7 +174,9 @@ def generate_quiz():
                 yield _sse(event_type, data)
 
                 if event_type == "done":
-                    _history_service.add(data)
+                    # SQLite is the canonical store post P1-E. The
+                    # legacy JSON-backed HistoryService was removed
+                    # (audit M-006).
                     _save_quiz_session(data, params)
 
         except ConnectionError as e:

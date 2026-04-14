@@ -6,7 +6,6 @@ from app.api.health import health_bp
 from app.api.models import models_bp
 from app.api.content import content_bp
 from app.api.quiz import quiz_bp
-from app.api.history import history_bp
 from app.api.documents import documents_bp
 from app.api.results import results_bp
 from app.database import init_db
@@ -31,7 +30,6 @@ def create_app() -> Flask:
     app.register_blueprint(models_bp,     url_prefix="/api")
     app.register_blueprint(content_bp,    url_prefix="/api")
     app.register_blueprint(quiz_bp,       url_prefix="/api")
-    app.register_blueprint(history_bp,    url_prefix="/api")
     app.register_blueprint(documents_bp,  url_prefix="/api")
     app.register_blueprint(results_bp,    url_prefix="/api")
 

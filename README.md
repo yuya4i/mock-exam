@@ -128,8 +128,8 @@ Ports:
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API endpoint |
 | `FLASK_ENV` | `production` (default compose) / `development` (dev compose) | Flask environment |
 | `CORS_ORIGINS` | `http://localhost:1234` | Comma-separated allowed CORS origins |
-| `HISTORY_FILE` | `/app/.cache/history.json` | Legacy JSON history file path |
-| `DB_PATH` | `/app/.cache/quizgen.db` | SQLite file path |
+| `DB_PATH` | auto (`/app/.cache/quizgen.db` in container, `<tmp>/quizgen/quizgen.db` otherwise) | SQLite file path |
+| `API_TOKEN` | *(unset — no auth)* | When set, all `/api/*` requires `Authorization: Bearer <token>`. See `SECURITY.md` §6. |
 | `ALLOW_HTTP` | *(unset — `https` only)* | Set to `1` to allow `http://` URLs. See `SECURITY.md`. |
 | `ALLOW_PRIVATE_NETWORKS` | *(unset — public IPs only)* | Set to `1` to allow RFC1918/loopback/link-local targets. Cloud metadata IPs remain denied. |
 | `MAX_FETCH_BYTES` | `10485760` (10 MiB) | Per-request response body cap for outbound fetches |
@@ -163,14 +163,13 @@ quiz-app/
 │       │   ├── content.py      # GET  /api/content/scrape-stream (SSE)
 │       │   │                   # POST /api/content/preview, /api/content/fetch
 │       │   ├── quiz.py         # POST /api/quiz/generate (SSE)
-│       │   ├── history.py      # CRUD /api/history (legacy JSON-backed)
 │       │   ├── documents.py    # CRUD /api/documents
 │       │   └── results.py      # CRUD /api/results (+ category aggregations)
 │       └── services/
 │           ├── ollama_service.py     # Ollama REST API client
 │           ├── content_service.py    # Camoufox BFS scraper (plugin arch)
 │           ├── quiz_service.py       # Incremental question generation
-│           └── history_service.py    # Legacy history (JSON file)
+│           └── safe_fetch.py         # SSRF deny-by-default policy
 ├── frontend/
 │   ├── Dockerfile              # Multi-stage build (nginx)
 │   ├── Dockerfile.dev          # Vite dev server
@@ -215,9 +214,6 @@ quiz-app/
 | GET  | `/api/results/<session_id>` | Session detail |
 | POST | `/api/results/<session_id>/answers` | Save user answers and score |
 | DELETE | `/api/results/<session_id>` | Delete a session |
-| GET  | `/api/history` | Legacy JSON-backed history list (`?limit=&offset=`) |
-| GET  | `/api/history/<session_id>` | Legacy JSON-backed history detail |
-| DELETE | `/api/history/<session_id>` | Delete a legacy history entry |
 
 SSE endpoints emit named events. The current contract is:
 
@@ -378,8 +374,8 @@ open http://localhost:1234
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | OllamaのAPIエンドポイント |
 | `FLASK_ENV` | `production`（default compose）/ `development`（dev compose） | Flask実行環境 |
 | `CORS_ORIGINS` | `http://localhost:1234` | CORSを許可するオリジン（カンマ区切り） |
-| `HISTORY_FILE` | `/app/.cache/history.json` | レガシーJSON履歴ファイルパス |
-| `DB_PATH` | `/app/.cache/quizgen.db` | SQLiteファイルパス |
+| `DB_PATH` | 自動 (コンテナ内は `/app/.cache/quizgen.db`、それ以外は `<tmp>/quizgen/quizgen.db`) | SQLiteファイルパス |
+| `API_TOKEN` | *(未設定＝認証なし)* | 設定時、全 `/api/*` リクエストに `Authorization: Bearer <token>` を要求。`SECURITY.md` §6 参照 |
 | `ALLOW_HTTP` | *(未設定＝`https`のみ許可)* | `1` にすると `http://` も許可。`SECURITY.md` 参照 |
 | `ALLOW_PRIVATE_NETWORKS` | *(未設定＝パブリックIPのみ)* | `1` にするとRFC1918/ループバック/リンクローカルも許可。クラウドメタデータIPは常に拒否 |
 | `MAX_FETCH_BYTES` | `10485760` (10 MiB) | 外部フェッチのレスポンス最大サイズ |
@@ -413,14 +409,13 @@ quiz-app/
 │       │   ├── content.py      # GET /api/content/scrape-stream (SSE)
 │       │   │                   # POST /api/content/preview, /api/content/fetch
 │       │   ├── quiz.py         # POST /api/quiz/generate (SSE)
-│       │   ├── history.py      # CRUD /api/history（レガシーJSONバック）
 │       │   ├── documents.py    # CRUD /api/documents
 │       │   └── results.py      # CRUD /api/results（カテゴリ集計含む）
 │       └── services/
 │           ├── ollama_service.py     # Ollama REST API通信
 │           ├── content_service.py    # camoufox BFSスクレイパー（プラグイン構造）
 │           ├── quiz_service.py       # 1問ずつ逐次生成ロジック
-│           └── history_service.py    # レガシー履歴管理（JSONファイル）
+│           └── safe_fetch.py         # SSRF deny-by-default ポリシー
 ├── frontend/
 │   ├── Dockerfile              # マルチステージビルド（nginx配信）
 │   ├── Dockerfile.dev          # Vite dev server
@@ -465,9 +460,6 @@ quiz-app/
 | GET  | `/api/results/<session_id>` | セッション詳細 |
 | POST | `/api/results/<session_id>/answers` | 解答・スコアの保存 |
 | DELETE | `/api/results/<session_id>` | セッション削除 |
-| GET  | `/api/history` | レガシーJSON履歴一覧（`?limit=&offset=`）|
-| GET  | `/api/history/<session_id>` | レガシー履歴詳細 |
-| DELETE | `/api/history/<session_id>` | レガシー履歴削除 |
 
 SSEエンドポイントは名前付きイベントを送信します。現時点の契約:
 
