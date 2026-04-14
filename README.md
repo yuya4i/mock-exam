@@ -1,5 +1,6 @@
 # QuizGen - AI Quiz Generator / AI模擬問題自動生成アプリ
 
+[![CI](https://github.com/yuya4i/mock-exam/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yuya4i/mock-exam/actions/workflows/ci.yml)
 [![Vue.js](https://img.shields.io/badge/Vue.js_3-4FC08D?logo=vuedotjs&logoColor=fff)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/Vite_6-646CFF?logo=vite&logoColor=fff)](https://vite.dev/)
 [![Flask](https://img.shields.io/badge/Flask_3-000?logo=flask&logoColor=fff)](https://flask.palletsprojects.com/)

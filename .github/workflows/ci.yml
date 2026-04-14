@@ -1,0 +1,114 @@
+name: CI
+
+# Triggered on every push to main and every PR targeting main.
+# Manual dispatch is enabled so a maintainer can re-run after CI infra
+# changes without having to push an empty commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save Action minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------------------
+  # Backend: pytest suite (52 cases as of Phase 1).
+  # Camoufox's Firefox binary is NOT downloaded — none of the tests use
+  # it (see backend/tests/), and `python -m camoufox fetch` would add
+  # ~200 MB to every run.
+  # ----------------------------------------------------------------------
+  backend:
+    name: backend / pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest
+
+      - name: Run pytest
+        env:
+          # conftest.py also sets these as defaults, but make CI explicit
+          # so a future conftest refactor doesn't silently break the run.
+          DB_PATH: /tmp/quiz_ci.db
+          HISTORY_FILE: /tmp/quiz_ci_history.json
+        run: |
+          cd backend
+          python -m pytest tests/ -v --color=yes
+
+  # ----------------------------------------------------------------------
+  # Frontend: lockfile-deterministic install, audit, build.
+  # `npm ci` fails if package-lock.json drifts from package.json — a
+  # cheap supply-chain regression check on every PR.
+  # ----------------------------------------------------------------------
+  frontend:
+    name: frontend / build + audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Node deps (deterministic)
+        run: |
+          cd frontend
+          npm ci
+
+      - name: npm audit (production deps only)
+        run: |
+          cd frontend
+          # Fail on moderate or higher; report low/info but pass.
+          npm audit --omit=dev --audit-level=moderate
+
+      - name: Build (vite)
+        run: |
+          cd frontend
+          npm run build
+
+  # ----------------------------------------------------------------------
+  # Python dep audit. Initially WARN-only because camoufox[geoip] is
+  # currently unpinned (Phase 1 follow-up); promoting this to a hard
+  # gate is tracked alongside the dep-pinning work.
+  # ----------------------------------------------------------------------
+  dep-audit-python:
+    name: deps / pip-audit (warn)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit backend/requirements.txt
+        run: pip-audit -r backend/requirements.txt --strict
