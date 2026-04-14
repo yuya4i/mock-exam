@@ -90,12 +90,53 @@
           <div class="form-group full-width">
             <label class="form-label">コンテンツソース（URL または テキスト）</label>
             <div class="source-input-row">
-              <input
-                v-model="params.source"
-                class="form-input"
-                placeholder="https://example.com/docs または 直接テキストを入力..."
-                @keydown.enter="previewContent"
-              />
+              <div class="source-combobox" @keydown="onComboboxKeydown">
+                <input
+                  ref="sourceInputRef"
+                  v-model="params.source"
+                  class="form-input"
+                  placeholder="https://example.com/docs または 直接テキストを入力..."
+                  autocomplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  :aria-expanded="autocompleteOpen"
+                  aria-controls="source-autocomplete-list"
+                  :aria-activedescendant="activeSuggestionId"
+                  @focus="openAutocomplete"
+                  @blur="handleInputBlur"
+                  @input="onSourceInput"
+                />
+                <div
+                  v-if="autocompleteOpen"
+                  id="source-autocomplete-list"
+                  class="autocomplete-dropdown"
+                  role="listbox"
+                >
+                  <div v-if="documents.length === 0" class="autocomplete-empty">
+                    保存済みコンテンツがありません
+                  </div>
+                  <div v-else-if="autocompleteSuggestions.length === 0" class="autocomplete-empty">
+                    一致するコンテンツがありません
+                  </div>
+                  <div
+                    v-for="(doc, idx) in autocompleteSuggestions"
+                    :key="doc.id"
+                    :id="`source-suggestion-${doc.id}`"
+                    role="option"
+                    :aria-selected="idx === activeSuggestionIndex"
+                    class="autocomplete-item"
+                    :class="{ active: idx === activeSuggestionIndex }"
+                    @mousedown.prevent="selectSuggestion(doc)"
+                    @mouseenter="activeSuggestionIndex = idx"
+                  >
+                    <span class="autocomplete-icon">{{ sourceIcon(doc.source_type) }}</span>
+                    <div class="autocomplete-text">
+                      <span class="autocomplete-title">{{ doc.title || doc.url || '無題' }}</span>
+                      <span v-if="doc.url" class="autocomplete-url">{{ doc.url }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <button class="btn btn-secondary" @click="previewContent" :disabled="!params.source || previewing">
                 <span v-if="previewing" class="spinner"></span>
                 <span v-else>プレビュー</span>
@@ -423,7 +464,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useQuizStore, useModelsStore, useDocumentsStore, useScrapeProgressStore, useResultsStore } from '@/stores'
@@ -485,6 +526,134 @@ const progressMobileOpen = ref(false)
 const selectedDocId     = ref(null)
 const documents         = ref([])
 const documentsLoading  = ref(false)
+
+// ---- コンテンツソース オートコンプリート ----
+const sourceInputRef       = ref(null)
+const autocompleteOpen     = ref(false)
+const activeSuggestionIndex = ref(-1)
+let blurTimer = null
+
+const MAX_AUTOCOMPLETE_ITEMS = 10
+
+// 最近スクレイプ順にソートされた全ドキュメント
+const sortedDocuments = computed(() => {
+  return [...documents.value].sort((a, b) => {
+    const ta = a.scraped_at ? new Date(a.scraped_at).getTime() : 0
+    const tb = b.scraped_at ? new Date(b.scraped_at).getTime() : 0
+    return tb - ta
+  })
+})
+
+// 入力値にもとづく候補 (title or url 部分一致、大文字小文字無視、最大10件)
+const autocompleteSuggestions = computed(() => {
+  const q = (params.value.source || '').trim().toLowerCase()
+  const list = sortedDocuments.value
+  if (!q) return list.slice(0, MAX_AUTOCOMPLETE_ITEMS)
+  return list
+    .filter(
+      (d) =>
+        (d.title || '').toLowerCase().includes(q) ||
+        (d.url || '').toLowerCase().includes(q),
+    )
+    .slice(0, MAX_AUTOCOMPLETE_ITEMS)
+})
+
+const activeSuggestionId = computed(() => {
+  const doc = autocompleteSuggestions.value[activeSuggestionIndex.value]
+  return doc ? `source-suggestion-${doc.id}` : undefined
+})
+
+function openAutocomplete() {
+  if (blurTimer) {
+    clearTimeout(blurTimer)
+    blurTimer = null
+  }
+  autocompleteOpen.value = true
+  activeSuggestionIndex.value = -1
+}
+
+function closeAutocomplete() {
+  autocompleteOpen.value = false
+  activeSuggestionIndex.value = -1
+}
+
+function handleInputBlur() {
+  // クリック選択を登録させるため少し遅延させてから閉じる
+  if (blurTimer) clearTimeout(blurTimer)
+  blurTimer = setTimeout(() => {
+    closeAutocomplete()
+  }, 200)
+}
+
+function onSourceInput() {
+  if (!autocompleteOpen.value) autocompleteOpen.value = true
+  activeSuggestionIndex.value = -1
+}
+
+function selectSuggestion(doc) {
+  params.value.source = doc.url || doc.title || ''
+  selectedDocId.value = doc.id
+  closeAutocomplete()
+  // 入力のフォーカスを外して focus イベントによる再オープンを避ける
+  sourceInputRef.value?.blur()
+  // プレビュー実行 (スクレイプはトリガーしない)
+  nextTick(() => {
+    previewContent()
+  })
+}
+
+function onComboboxKeydown(e) {
+  // ドロップダウンが閉じているとき
+  if (!autocompleteOpen.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      openAutocomplete()
+      if (autocompleteSuggestions.value.length > 0) activeSuggestionIndex.value = 0
+    } else if (e.key === 'Enter') {
+      // 既存挙動: プレビュー実行
+      e.preventDefault()
+      previewContent()
+    }
+    return
+  }
+
+  switch (e.key) {
+    case 'ArrowDown': {
+      e.preventDefault()
+      const n = autocompleteSuggestions.value.length
+      if (n === 0) return
+      activeSuggestionIndex.value =
+        activeSuggestionIndex.value >= n - 1 ? 0 : activeSuggestionIndex.value + 1
+      break
+    }
+    case 'ArrowUp': {
+      e.preventDefault()
+      const n = autocompleteSuggestions.value.length
+      if (n === 0) return
+      activeSuggestionIndex.value =
+        activeSuggestionIndex.value <= 0 ? n - 1 : activeSuggestionIndex.value - 1
+      break
+    }
+    case 'Enter': {
+      const doc = autocompleteSuggestions.value[activeSuggestionIndex.value]
+      if (doc) {
+        e.preventDefault()
+        selectSuggestion(doc)
+      } else {
+        // 何も選択されていない → 既存挙動でプレビュー
+        e.preventDefault()
+        closeAutocomplete()
+        previewContent()
+      }
+      break
+    }
+    case 'Escape': {
+      e.preventDefault()
+      closeAutocomplete()
+      break
+    }
+  }
+}
 
 const isUrl = computed(() =>
   params.value.source.startsWith('http://') ||
@@ -939,6 +1108,85 @@ watch(() => params.value.source, (newVal) => {
 .already-scraped-actions .btn {
   font-size: 12px;
   padding: 6px 12px;
+}
+
+/* ---- コンテンツソース オートコンプリート ---- */
+.source-combobox {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.source-combobox .form-input {
+  width: 100%;
+}
+
+.autocomplete-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.autocomplete-empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.autocomplete-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.autocomplete-item:hover,
+.autocomplete-item.active {
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent-hover);
+}
+
+.autocomplete-icon {
+  font-size: 14px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.autocomplete-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.autocomplete-title {
+  font-size: 13px;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autocomplete-url {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.autocomplete-item.active .autocomplete-url {
+  color: var(--text-muted);
 }
 
 /* ---- スクレイピングオプション ---- */
