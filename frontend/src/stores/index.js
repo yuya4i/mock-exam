@@ -27,6 +27,11 @@ export const useModelsStore = defineStore('models', () => {
   const error    = ref(null)
   const settings = useSettingsStore()
 
+  // ホストPCのスペック（/api/system/specs）
+  // { ram_total_gb, ram_available_gb, cpu_count, platform } | null
+  const systemSpecs = ref(null)
+  const specsError  = ref(null)
+
   async function fetchModels() {
     loading.value = true
     error.value   = null
@@ -38,9 +43,28 @@ export const useModelsStore = defineStore('models', () => {
     } finally {
       loading.value = false
     }
+    // モデル取得時にシステムスペックも併せて取得（未取得時のみ）
+    if (systemSpecs.value === null) {
+      fetchSystemSpecs().catch(() => {})
+    }
   }
 
-  return { models, loading, error, fetchModels }
+  async function fetchSystemSpecs() {
+    specsError.value = null
+    try {
+      const res = await api.get('/system/specs')
+      systemSpecs.value = res.data || null
+    } catch (e) {
+      specsError.value  = e.message
+      systemSpecs.value = null
+    }
+  }
+
+  return {
+    models, loading, error,
+    systemSpecs, specsError,
+    fetchModels, fetchSystemSpecs,
+  }
 })
 
 // ======================================================================
