@@ -113,7 +113,12 @@ const diagramSvg = ref('')
 async function renderDiagram() {
   if (!props.question.diagram || !diagramEl.value) return
   try {
-    const { default: mermaid } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')
+    // Mermaid は 'mermaid' パッケージを npm で解決する（バージョン固定）。
+    // 以前は cdn.jsdelivr.net から動的 import していたが、オフライン動作
+    // 不可・SRI なし・供給チェーン監査困難という P0-9 の指摘に対応して
+    // ローカルインストールへ移行した。バージョンは package.json で固定
+    // しているので、mermaid.render のサニタイズ境界も監査可能になる。
+    const { default: mermaid } = await import('mermaid')
     // base + themeVariables で全図種のテキストコントラストを明示制御。
     // 'dark' プリセットは pie / journey / quadrant / sankey / C4 等で
     // テキストが薄く読みにくくなる既知の問題があるため、自前で配色する。
