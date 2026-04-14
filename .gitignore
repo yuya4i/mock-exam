@@ -7,3 +7,8 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# テスト用一時ファイル
+.playwright-mcp/
+/*.png
+/*.jpeg

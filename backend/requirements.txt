@@ -8,3 +8,5 @@ python-dotenv==1.0.1
 cachetools==5.3.3
 pypdf==4.3.1
 camoufox[geoip]
+# 開発用: Flaskリロードの高速化・WSL2バインドマウント対応
+watchdog==4.0.2

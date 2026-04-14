@@ -48,4 +48,9 @@ RUN python -m camoufox fetch
 
 EXPOSE 4321
 
-CMD ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=4321", "--reload", "--debug"]
+# 出力バッファリングを無効化（ログ即時表示）
+ENV PYTHONUNBUFFERED=1
+
+# Werkzeug reloader は watchdog パッケージが入っていれば自動的に WatchdogReloaderLoop を使用。
+# --debug は --reload を含む。--debugger はデバッガーUIを有効化。
+CMD ["python", "run_dev.py", "--app", "app", "run", "--host=0.0.0.0", "--port=4321", "--debug"]

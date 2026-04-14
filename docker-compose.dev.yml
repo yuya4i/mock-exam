@@ -14,6 +14,7 @@ services:
       - FLASK_ENV=development
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:1234}
       - HISTORY_FILE=/app/.cache/history.json
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./backend:/app
       - quiz-cache:/app/.cache
@@ -27,6 +28,23 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    # ---- Docker Compose Watch（2.22+） ----
+    # `docker compose -f docker-compose.dev.yml watch` で自動同期／再ビルド
+    develop:
+      watch:
+        # アプリコード: bind mount 経由で即反映（Flask --debug が拾う）
+        - action: sync
+          path: ./backend/app
+          target: /app/app
+          ignore:
+            - __pycache__/
+            - "*.pyc"
+        # 依存追加: requirements.txt が変わったら再ビルド
+        - action: rebuild
+          path: ./backend/requirements.txt
+        # Dockerfile変更: 再ビルド
+        - action: rebuild
+          path: ./backend/Dockerfile.dev
 
   # ============================================================
   # フロントエンド（Vite dev server - ホットリロード対応）
@@ -50,6 +68,32 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    # ---- Docker Compose Watch ----
+    develop:
+      watch:
+        # ソース: Vite HMRが拾うので bind mount のsyncで十分
+        - action: sync
+          path: ./frontend/src
+          target: /app/src
+          ignore:
+            - node_modules/
+            - dist/
+            - ".vite/"
+        - action: sync
+          path: ./frontend/public
+          target: /app/public
+        - action: sync
+          path: ./frontend/index.html
+          target: /app/index.html
+        - action: sync
+          path: ./frontend/vite.config.js
+          target: /app/vite.config.js
+        # 依存追加: package.json変更で再ビルド
+        - action: rebuild
+          path: ./frontend/package.json
+        # Dockerfile変更: 再ビルド
+        - action: rebuild
+          path: ./frontend/Dockerfile.dev
 
 volumes:
   quiz-cache:
