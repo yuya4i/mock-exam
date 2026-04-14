@@ -433,29 +433,30 @@ export const useScrapeProgressStore = defineStore('scrapeProgress', () => {
       eventSource = null
     })
 
-    eventSource.addEventListener('error_event', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        error.value = data.message || 'スクレイピングエラー'
-      } catch (_) {
-        error.value = 'スクレイピング中にエラーが発生しました'
+    // 単一の 'error' リスナーでサーバー送信エラー(event: error)と接続エラーの両方を扱う。
+    // - サーバー送信の 'error' は MessageEvent として届くので e.data に JSON がある。
+    // - ネイティブの接続エラーは Event として届き、e.data は undefined。
+    // 以前は 'error_event' + onerror の二系統で契約がズレていた（backend はエイリアス名
+    // を使っていた）。今はバックエンド/フロント双方で 'error' に統一している。
+    eventSource.addEventListener('error', (e) => {
+      if (e.data) {
+        try {
+          const data = JSON.parse(e.data)
+          error.value = data.message || 'スクレイピングエラー'
+        } catch (_) {
+          error.value = 'スクレイピング中にエラーが発生しました'
+        }
+      } else if (isScraping.value) {
+        // 接続ドロップ。サーバーが done 後に閉じた場合も含むので、まだ loading の
+        // イベントを done に固定して状態を収束させる。
+        events.value.forEach((ev) => {
+          if (ev.status === 'loading') ev.status = 'done'
+        })
       }
       isScraping.value = false
       eventSource?.close()
       eventSource = null
     })
-
-    eventSource.onerror = () => {
-      if (isScraping.value) {
-        // Mark all loading events as done (SSE connection closed normally after done event)
-        events.value.forEach((ev) => {
-          if (ev.status === 'loading') ev.status = 'done'
-        })
-        isScraping.value = false
-      }
-      eventSource?.close()
-      eventSource = null
-    }
   }
 
   function stopScrape() {
