@@ -1,7 +1,39 @@
-__pycache__
+# ============================================================
+# backend/.dockerignore
+# Applied when `docker compose build backend` / `docker build` is
+# run with context=./backend (see docker-compose*.yml).
+# ============================================================
+
+# --- secrets ---
+.env
+.env.*
+secrets/
+
+# --- Python caches & envs ---
+__pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
-.cache
-.env
-*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# --- tests & tooling ---
 tests/
+conftest.py
+
+# --- local runtime artifacts ---
+.cache/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+
+# --- editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
