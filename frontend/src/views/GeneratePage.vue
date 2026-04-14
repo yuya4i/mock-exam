@@ -194,6 +194,38 @@
             <div v-if="modelsStore.models.length === 0 && !modelsStore.loading" class="alert alert-info" style="margin-top:6px">
               モデルが見つかりません。Ollamaが起動しているか確認してください。
             </div>
+
+            <!-- モデル容量チェック: 注意レベル（🟡） -->
+            <div
+              v-if="capabilityWarning && capabilityWarning.level === 'warn'"
+              class="alert alert-warning model-capability-notice"
+              style="margin-top:6px"
+            >
+              <span class="capability-icon">⚠️</span>
+              <div class="capability-body">
+                <div class="capability-title">{{ capabilityWarning.title }}</div>
+                <div class="capability-detail">{{ capabilityWarning.detail }}</div>
+              </div>
+            </div>
+
+            <!-- モデル容量チェック: 危険レベル（🔴） -->
+            <div
+              v-if="capabilityWarning && capabilityWarning.level === 'block'"
+              class="alert alert-error model-capability-risk"
+              style="margin-top:6px"
+            >
+              <div class="capability-risk-head">
+                <span class="capability-icon">🛑</span>
+                <div class="capability-body">
+                  <div class="capability-title">{{ capabilityWarning.title }}</div>
+                  <div class="capability-detail">{{ capabilityWarning.detail }}</div>
+                </div>
+              </div>
+              <label class="capability-override">
+                <input type="checkbox" v-model="riskAcknowledged" />
+                <span>リスクを承知で続行する</span>
+              </label>
+            </div>
           </div>
 
           <!-- 問題数 -->
@@ -508,14 +540,102 @@ watch(() => quizStore.generating, (val) => {
   if (!val && quizStore.result) currentStep.value = 3
 })
 
-const canGenerate = computed(() =>
-  params.value.source &&
-  params.value.model &&
-  params.value.count >= 1 &&
-  params.value.levels.length > 0 &&
-  params.value.doc_types.length > 0 &&
-  !quizStore.generating
-)
+// ---- モデル容量チェック ----
+// モデル名から B パラメータ数（例: "7b", "70b", "qwen3.5-9b-..."）を抽出
+function parseModelSizeB(name) {
+  if (!name) return null
+  // 小数も許容（例: 1.5b, 3.8b）
+  const m = String(name).toLowerCase().match(/(\d+(?:\.\d+)?)\s*b(?![a-z0-9])/)
+  if (!m) return null
+  const v = parseFloat(m[1])
+  return Number.isFinite(v) && v > 0 ? v : null
+}
+
+// Q4_K_M 量子化での概算: 0.6 GB/B
+const GB_PER_B_PARAM = 0.6
+
+// モデル変更時にリスク同意チェックをリセット
+const riskAcknowledged = ref(false)
+watch(() => params.value.model, () => {
+  riskAcknowledged.value = false
+})
+
+const capabilityWarning = computed(() => {
+  const modelName = params.value.model
+  if (!modelName) return null
+
+  const sizeB = parseModelSizeB(modelName)
+  const specs = modelsStore.systemSpecs
+  const avail = specs?.ram_available_gb
+
+  // 品質懸念: 小さすぎるモデルで hard or 問題数10超
+  const qualityConcern =
+    sizeB !== null && sizeB < 3 &&
+    (params.value.difficulty === 'hard' || params.value.count > 10)
+
+  // RAM が不明 or モデルサイズ未判定なら RAM チェックはスキップ
+  if (!avail || sizeB === null) {
+    if (qualityConcern) {
+      return {
+        level:  'warn',
+        title:  '⚠️ モデルサイズが小さい可能性があります',
+        detail: 'このモデルサイズでは複雑な問題の品質が低下する可能性があります',
+      }
+    }
+    return null
+  }
+
+  const estRamGb = sizeB * GB_PER_B_PARAM
+  const ratio    = estRamGb / avail
+
+  if (ratio > 1.0) {
+    return {
+      level: 'block',
+      title: '🛑 メモリ不足のリスクがあります',
+      detail: `推定必要RAM ${estRamGb.toFixed(1)}GB に対し、利用可能 ${avail.toFixed(1)}GB。メモリ不足でクラッシュする可能性があります。`,
+    }
+  }
+
+  if (ratio >= 0.7) {
+    const base = {
+      level: 'warn',
+      title: '⚠️ モデルがホスト性能の限界に近い',
+      detail: `推定必要RAM ${estRamGb.toFixed(1)}GB / 利用可能 ${avail.toFixed(1)}GB。応答が遅くなる可能性があります。`,
+    }
+    if (qualityConcern) {
+      base.detail += ' また、このモデルサイズでは複雑な問題の品質が低下する可能性があります。'
+    }
+    return base
+  }
+
+  // 🟢 OK だが品質懸念がある場合のみ警告
+  if (qualityConcern) {
+    return {
+      level:  'warn',
+      title:  '⚠️ モデルサイズが小さい可能性があります',
+      detail: 'このモデルサイズでは複雑な問題の品質が低下する可能性があります',
+    }
+  }
+
+  return null
+})
+
+const canGenerate = computed(() => {
+  const baseOk =
+    params.value.source &&
+    params.value.model &&
+    params.value.count >= 1 &&
+    params.value.levels.length > 0 &&
+    params.value.doc_types.length > 0 &&
+    !quizStore.generating
+
+  if (!baseOk) return false
+  // 🔴 ブロックレベルは同意チェック必須
+  if (capabilityWarning.value?.level === 'block' && !riskAcknowledged.value) {
+    return false
+  }
+  return true
+})
 
 const answeredAll = computed(() => {
   if (!quizStore.result?.questions) return false
@@ -662,6 +782,7 @@ function formatSize(bytes) {
 // Handle prefilled source from route query
 onMounted(() => {
   modelsStore.fetchModels()
+  modelsStore.fetchSystemSpecs()
   refreshDocuments()
 
   if (route.query.source) {
@@ -1398,5 +1519,48 @@ watch(() => route.query.source, (newSource) => {
   .doc-type-group { gap: 4px; }
   .doc-type-label { padding: 4px 8px; font-size: 11px; }
   .checkbox-group { gap: 8px; }
+}
+
+/* ========== モデル容量警告 ========== */
+.model-capability-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.model-capability-notice .capability-icon { font-size: 16px; line-height: 1; margin-top: 1px; }
+.model-capability-notice .capability-title { font-weight: 600; margin-bottom: 2px; color: var(--warning); }
+.model-capability-notice .capability-detail { color: var(--text-muted); }
+
+.model-capability-risk {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.model-capability-risk .capability-risk-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.model-capability-risk .capability-icon { font-size: 18px; line-height: 1; margin-top: 1px; }
+.model-capability-risk .capability-title { font-weight: 700; margin-bottom: 2px; font-size: 13px; }
+.model-capability-risk .capability-detail { font-size: 12px; line-height: 1.5; opacity: 0.9; }
+
+.capability-override {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(239,68,68,0.15);
+  border: 1px solid rgba(239,68,68,0.35);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+  align-self: flex-start;
+}
+.capability-override input[type="checkbox"] {
+  cursor: pointer;
 }
 </style>
