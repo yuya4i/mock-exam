@@ -40,15 +40,12 @@ _AUTH_EXEMPT_PATHS = frozenset({
     "/api/health",
 })
 
-# Endpoints that may accept the token via the ``api_token`` query
-# parameter in addition to the Authorization header. This is a
-# deliberate carve-out for browser EventSource callers (which cannot
-# set custom headers) — only the GET SSE endpoints should appear here.
-# A query-param token leaks in access logs; the risk is accepted for
-# this narrow path until P1-G migrates the SSE client to fetch+stream.
-_AUTH_QUERY_PARAM_PATHS = frozenset({
-    "/api/content/scrape-stream",
-})
+# P1-G removed the ``?api_token=`` query-parameter carve-out for
+# /api/content/scrape-stream because the frontend now consumes that SSE
+# stream via ``fetch`` instead of ``EventSource``. ``fetch`` honors the
+# Authorization header, so no in-URL secret is ever required. Tokens in
+# URLs leak through access logs, browser histories, and Referer headers
+# — this is a real reduction in attack surface.
 
 
 def _get_expected_token() -> str:
@@ -92,14 +89,6 @@ def _require_token():
         return None
 
     provided = _extract_bearer_token(request.headers.get("Authorization"))
-
-    # Query-param fallback for EventSource callers. Only honored for paths
-    # in _AUTH_QUERY_PARAM_PATHS (a short allowlist).
-    if provided is None and request.path in _AUTH_QUERY_PARAM_PATHS:
-        q = request.args.get("api_token", "").strip()
-        if q:
-            provided = q
-
     if provided is None:
         return jsonify({"error": "認証が必要です。"}), 401
 

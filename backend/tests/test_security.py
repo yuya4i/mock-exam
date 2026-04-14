@@ -76,30 +76,32 @@ def test_non_api_path_is_exempt(make_client):
     assert r.status_code != 401
 
 
-def test_scrape_stream_accepts_query_param_token(make_client):
+def test_query_param_token_is_no_longer_accepted_anywhere(make_client):
+    """P1-G removed the ?api_token= carve-out for SSE endpoints. The
+    frontend now uses fetch+stream and sends the Authorization header
+    just like every other request, so no path should accept the token
+    via query string anymore."""
     client = make_client(api_token="s3cret")
+    # Was accepted pre-P1-G:
     r = client.get(
         "/api/content/scrape-stream"
         "?source=https://example.com&depth=1&api_token=s3cret",
     )
-    # Upstream starts streaming (200). Wrong/missing token would be 401.
-    assert r.status_code != 401
-
-
-def test_scrape_stream_rejects_wrong_query_param_token(make_client):
-    client = make_client(api_token="s3cret")
-    r = client.get(
-        "/api/content/scrape-stream"
-        "?source=https://example.com&depth=1&api_token=WRONG",
-    )
     assert r.status_code == 401
-
-
-def test_non_sse_endpoint_ignores_query_param_token(make_client):
-    """?api_token= should only work on the narrow SSE allowlist."""
-    client = make_client(api_token="s3cret")
+    # And still rejected on non-SSE endpoints (regression check):
     r = client.get("/api/models?api_token=s3cret")
     assert r.status_code == 401
+
+
+def test_scrape_stream_accepts_authorization_header(make_client):
+    """The SSE endpoint must accept the same Bearer header as other
+    endpoints (this is what the new fetch-based frontend sends)."""
+    client = make_client(api_token="s3cret")
+    r = client.get(
+        "/api/content/scrape-stream?source=https://example.com&depth=1",
+        headers={"Authorization": "Bearer s3cret"},
+    )
+    assert r.status_code != 401
 
 
 def test_constant_time_compare_accepts_matching_token(make_client):

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api, { API_TOKEN_STORAGE_KEY } from '@/composables/useApi'
+import { streamSSE } from '@/composables/useSSE'
 
 // ======================================================================
 // 設定ストア
@@ -129,61 +130,15 @@ export const useQuizStore = defineStore('quiz', () => {
 
     const baseUrl = api.defaults.baseURL || '/api'
 
-    // axios の interceptor は fetch() には効かないので手動で Authorization を付ける。
-    // localStorage の key は useApi.js の API_TOKEN_STORAGE_KEY と一致させる。
-    const storedToken = localStorage.getItem(API_TOKEN_STORAGE_KEY)
-    const requestHeaders = { 'Content-Type': 'application/json' }
-    if (storedToken && storedToken.trim()) {
-      requestHeaders.Authorization = `Bearer ${storedToken.trim()}`
-    }
-
     try {
-      const response = await fetch(`${baseUrl}/quiz/generate`, {
-        method: 'POST',
-        headers: requestHeaders,
-        body: JSON.stringify(payload),
-        signal: abortController.signal,
-      })
-
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}))
-        throw new Error(errBody.error || `HTTP ${response.status}`)
-      }
-
-      // SSEをReadableStreamで読み取る
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-
-        // SSEイベントをパース（"event: ...\ndata: ...\n\n" 形式）
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() // 未完成の最後のチャンクを保持
-
-        for (const part of parts) {
-          if (!part.trim()) continue
-          const lines = part.split('\n')
-          let eventType = 'message'
-          let eventData = ''
-
-          for (const line of lines) {
-            if (line.startsWith('event: ')) eventType = line.slice(7)
-            else if (line.startsWith('data: ')) eventData = line.slice(6)
-          }
-
-          if (!eventData) continue
-
-          try {
-            const data = JSON.parse(eventData)
-            _handleEvent(eventType, data)
-          } catch (_) {}
-        }
-      }
+      // streamSSE が Authorization 自動付与・SSE 行パースを集約しているので、
+      // ストアはイベントハンドラに専念する。
+      await streamSSE(
+        `${baseUrl}/quiz/generate`,
+        { method: 'POST', body: payload },
+        _handleEvent,
+        abortController.signal,
+      )
     } catch (e) {
       if (e.name !== 'AbortError') {
         error.value = e.message
@@ -396,7 +351,7 @@ export const useResultsStore = defineStore('results', () => {
 })
 
 // ======================================================================
-// スクレイピング経過ストア
+// スクレイピング経過ストア (P1-G で fetch+stream に統一)
 // ======================================================================
 export const useScrapeProgressStore = defineStore('scrapeProgress', () => {
   const events    = ref([])
@@ -404,9 +359,9 @@ export const useScrapeProgressStore = defineStore('scrapeProgress', () => {
   const summary   = ref({ pagesFound: 0 })
   const error     = ref(null)
 
-  let eventSource = null
+  let abortController = null
 
-  function startScrape(source, depth, docTypes) {
+  async function startScrape(source, depth, docTypes) {
     // 前回の接続をクリーンアップ
     stopScrape()
 
@@ -415,6 +370,8 @@ export const useScrapeProgressStore = defineStore('scrapeProgress', () => {
     error.value     = null
     summary.value   = { pagesFound: 0 }
 
+    abortController = new AbortController()
+
     const baseUrl = api.defaults.baseURL || '/api'
     const params = new URLSearchParams({
       source,
@@ -422,79 +379,65 @@ export const useScrapeProgressStore = defineStore('scrapeProgress', () => {
       doc_types: docTypes.join(','),
     })
 
-    // EventSource はカスタムヘッダ非対応のため、保存済み API_TOKEN は
-    // クエリパラメータ (api_token=) でフォールバック送信する。バックエンドの
-    // 認証ミドルウェアは /api/content/scrape-stream に限ってこの形を許可する。
-    // 参照: backend/app/security.py の _AUTH_QUERY_PARAM_PATHS。
-    const storedToken = localStorage.getItem(API_TOKEN_STORAGE_KEY)
-    if (storedToken && storedToken.trim()) {
-      params.append('api_token', storedToken.trim())
+    function handleEvent(type, data) {
+      switch (type) {
+        case 'progress': {
+          events.value.push({
+            type:   'progress',
+            url:    data.url,
+            depth:  data.depth,
+            status: 'loading',
+            pages_found: data.pages_found,
+          })
+          summary.value.pagesFound = data.pages_found || events.value.length
+          break
+        }
+        case 'done': {
+          events.value.forEach((ev) => { ev.status = 'done' })
+          events.value.push({
+            type:        'done',
+            document_id: data.document_id,
+            title:       data.title,
+            status:      'done',
+          })
+          summary.value.pagesFound = data.page_count || summary.value.pagesFound
+          break
+        }
+        case 'error': {
+          error.value = data?.message || 'スクレイピングエラー'
+          break
+        }
+      }
     }
 
-    eventSource = new EventSource(`${baseUrl}/content/scrape-stream?${params}`)
-
-    eventSource.addEventListener('progress', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        events.value.push({
-          type:   'progress',
-          url:    data.url,
-          depth:  data.depth,
-          status: 'loading',
-          pages_found: data.pages_found,
-        })
-        summary.value.pagesFound = data.pages_found || events.value.length
-      } catch (_) {}
-    })
-
-    eventSource.addEventListener('done', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        // 全イベントのステータスを完了に更新
-        events.value.forEach((ev) => { ev.status = 'done' })
-        events.value.push({
-          type:        'done',
-          document_id: data.document_id,
-          title:       data.title,
-          status:      'done',
-        })
-        summary.value.pagesFound = data.page_count || summary.value.pagesFound
-      } catch (_) {}
-      isScraping.value = false
-      eventSource?.close()
-      eventSource = null
-    })
-
-    // 単一の 'error' リスナーでサーバー送信エラー(event: error)と接続エラーの両方を扱う。
-    // - サーバー送信の 'error' は MessageEvent として届くので e.data に JSON がある。
-    // - ネイティブの接続エラーは Event として届き、e.data は undefined。
-    // 以前は 'error_event' + onerror の二系統で契約がズレていた（backend はエイリアス名
-    // を使っていた）。今はバックエンド/フロント双方で 'error' に統一している。
-    eventSource.addEventListener('error', (e) => {
-      if (e.data) {
-        try {
-          const data = JSON.parse(e.data)
-          error.value = data.message || 'スクレイピングエラー'
-        } catch (_) {
-          error.value = 'スクレイピング中にエラーが発生しました'
-        }
-      } else if (isScraping.value) {
-        // 接続ドロップ。サーバーが done 後に閉じた場合も含むので、まだ loading の
-        // イベントを done に固定して状態を収束させる。
-        events.value.forEach((ev) => {
-          if (ev.status === 'loading') ev.status = 'done'
-        })
+    try {
+      // P1-G: GET + fetch+stream に切り替え。EventSource をやめたので
+      // Authorization ヘッダが付き、`?api_token=` 経由のフォールバック
+      // (アクセスログ汚染) は撤去された。
+      await streamSSE(
+        `${baseUrl}/content/scrape-stream?${params}`,
+        { method: 'GET' },
+        handleEvent,
+        abortController.signal,
+      )
+      // ストリーム正常終了: まだ loading のイベントを done に確定。
+      events.value.forEach((ev) => {
+        if (ev.status === 'loading') ev.status = 'done'
+      })
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        error.value = e.message || 'スクレイピング中にエラーが発生しました'
       }
+    } finally {
       isScraping.value = false
-      eventSource?.close()
-      eventSource = null
-    })
+      abortController = null
+    }
   }
 
   function stopScrape() {
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
+    if (abortController) {
+      abortController.abort()
+      abortController = null
     }
     isScraping.value = false
   }
