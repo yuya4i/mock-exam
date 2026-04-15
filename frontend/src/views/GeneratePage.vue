@@ -56,6 +56,18 @@
           <span class="saved-sessions-title">📚 この資料で生成済みの問題セット</span>
           <span v-if="loadingSavedSessions" class="spinner" style="width:12px;height:12px"></span>
           <span v-else class="saved-count">{{ savedSessions.length }}件</span>
+          <!-- 選択中セッションがある時のみ表示。現在のフォーム設定で 20 問追加生成する。 -->
+          <button
+            v-if="selectedSessionId && !quizStore.generating"
+            class="btn btn-secondary regenerate-btn"
+            @click="regenerateForCurrentSession"
+            :disabled="!canRegenerate"
+            :title="canRegenerate
+              ? '現在の設定 (モデル / 知識レベル / 難易度 / ドキュメント種別) で 20 問を追加生成します'
+              : 'モデルとコンテンツソースを設定してください'"
+          >
+            🔁 +20問追加生成
+          </button>
         </div>
         <div class="saved-sessions-list">
           <button
@@ -63,6 +75,7 @@
             :key="s.session_id"
             class="saved-session-item"
             :class="{ active: selectedSessionId === s.session_id }"
+            :disabled="quizStore.generating"
             @click="loadSavedSession(s.session_id)"
           >
             <div class="saved-session-main">
@@ -894,6 +907,56 @@ async function loadSavedSession(sessionId) {
   }
 }
 
+// ────────────────────────────────────────────────────────────
+// 「+20問追加生成」フロー
+// ────────────────────────────────────────────────────────────
+//
+// 選択中の保存済みセッションに新しく 20 問を継ぎ足す。サーバー側は
+// `append_to_session_id` を受け取って既存 questions を merge し、
+// `previous_topics_block` を seed して重複出題を抑制する
+// (backend/app/api/quiz.py + services/quiz_service.py)。
+//
+// パラメータは現在のフォーム設定を踏襲。count だけ強制で 20。
+// ソース URL がフォームに無い場合は読み込み済みセッションの
+// source_info からフォールバックする。
+const canRegenerate = computed(() => {
+  if (!selectedSessionId.value) return false
+  if (quizStore.generating) return false
+  if (!params.value.model) return false
+  const src = params.value.source
+    || quizStore.result?.source_info?.source
+    || ''
+  return !!src
+})
+
+async function regenerateForCurrentSession() {
+  if (!canRegenerate.value) return
+  const sid = selectedSessionId.value
+  const sourceUrl = params.value.source
+    || quizStore.result?.source_info?.source
+    || ''
+
+  await quizStore.generate({
+    ...params.value,
+    source: sourceUrl,
+    count: 20,
+    append_to_session_id: sid,
+  })
+
+  // セッション一覧側の question_count を更新するため、
+  // 同じ document の savedSessions を取り直す。
+  if (selectedDocId.value) {
+    try {
+      const res = await api.get('/results', {
+        params: { document_id: selectedDocId.value },
+      })
+      savedSessions.value = res.data.sessions || []
+    } catch (_) {
+      // 一覧の更新失敗はサイレント (生成自体は成功している)。
+    }
+  }
+}
+
 async function refreshDocuments() {
   documentsLoading.value = true
   try {
@@ -1460,6 +1523,14 @@ watch(() => params.value.source, (newVal) => {
   padding: 2px 8px;
   background: var(--bg-primary);
   border-radius: 10px;
+}
+.regenerate-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.regenerate-btn:disabled {
+  opacity: 0.5;
 }
 .saved-sessions-list {
   display: flex;

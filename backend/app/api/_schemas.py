@@ -133,10 +133,29 @@ class QuizGenerateRequest(_ScrapeMixin):
     difficulty: Difficulty = "medium"
     ollama_options: dict = Field(default_factory=dict)
 
+    # Optional: when set, the new questions are APPENDED to the existing
+    # session instead of starting a fresh one. The route handler:
+    #   - looks up the existing session's questions and seeds the
+    #     "previously generated topics" diversity prompt with them,
+    #   - reuses the existing session_id (no new uuid),
+    #   - merges existing + new in the SSE `done` payload,
+    #   - UPDATEs the SQLite row instead of INSERTing a new one.
+    # Empty / missing means "fresh generation" (the original behavior).
+    append_to_session_id: str | None = Field(default=None, max_length=64)
+
     @field_validator("levels", mode="after")
     @classmethod
     def _levels_default_when_empty(cls, v: list[KLevel]) -> list[KLevel]:
         return v or ["K2", "K3", "K4"]
+
+    @field_validator("append_to_session_id", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 # --------------------------------------------------------------------------

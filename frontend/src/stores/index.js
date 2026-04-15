@@ -108,13 +108,28 @@ export const useQuizStore = defineStore('quiz', () => {
     return { correct, total: qs.length }
   })
 
+  // Append mode flag for the lifetime of the current generate() call.
+  // Read by _handleEvent('source_info') so it knows whether to wipe
+  // result.value or preserve the existing questions array. Reset in
+  // generate()'s finally block.
+  let _isAppendMode = false
+
   async function generate(params) {
-    generating.value  = true
-    error.value       = null
-    result.value      = null
-    userAnswers.value = {}
-    revealed.value    = {}
-    progress.value    = { current: 0, total: params.count, status: 'scraping' }
+    const isAppend = !!params.append_to_session_id
+    _isAppendMode = isAppend
+
+    generating.value = true
+    error.value = null
+    if (!isAppend) {
+      // Fresh generation: clear all state.
+      result.value = null
+      userAnswers.value = {}
+      revealed.value = {}
+    }
+    // For append: keep result.value, userAnswers, revealed untouched
+    // so the user can keep interacting with their existing questions
+    // while the new ones stream in.
+    progress.value = { current: 0, total: params.count, status: 'scraping' }
 
     abortController = new AbortController()
 
@@ -126,6 +141,9 @@ export const useQuizStore = defineStore('quiz', () => {
       difficulty: params.difficulty,
       depth:      params.depth     ?? 1,
       doc_types:  params.doc_types ?? ['table', 'csv', 'pdf', 'png'],
+      ...(isAppend
+        ? { append_to_session_id: params.append_to_session_id }
+        : {}),
     }
 
     const baseUrl = api.defaults.baseURL || '/api'
@@ -146,18 +164,25 @@ export const useQuizStore = defineStore('quiz', () => {
     } finally {
       generating.value = false
       abortController = null
+      _isAppendMode = false
     }
   }
 
   function _handleEvent(type, data) {
     switch (type) {
       case 'source_info':
-        // 結果オブジェクトを初期化（questionsは空配列で開始）
-        result.value = {
-          session_id:  data.session_id,
-          source_info: data,
-          model:       '',
-          questions:   [],
+        // Append mode: keep the existing result.questions visible while
+        // the new ones stream in. Just refresh source_info metadata.
+        if (_isAppendMode && result.value) {
+          result.value.source_info = data
+        } else {
+          // Fresh generation: initialize empty.
+          result.value = {
+            session_id:  data.session_id,
+            source_info: data,
+            model:       '',
+            questions:   [],
+          }
         }
         progress.value.status = 'generating'
         break
