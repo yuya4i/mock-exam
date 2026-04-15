@@ -122,16 +122,16 @@ def _save_quiz_session(result: dict, params: dict) -> None:
 
 def _load_existing_session(session_id: str) -> dict | None:
     """Load just enough of an existing quiz_sessions row to support the
-    append-to-existing path. Returns dict with ``questions`` and
-    derived ``topics`` (formatted to match generate_incremental's
-    "Topic (Level)" convention), or None if the session does not
-    exist or its JSON is corrupt.
+    append-to-existing path. Returns dict with ``questions``,
+    ``topics`` (formatted as "Topic (Level)"), and ``document_id``
+    (nullable) — or None if the session does not exist or its JSON is
+    corrupt.
     """
     try:
         from app.database import get_connection
         conn = get_connection()
         row = conn.execute(
-            "SELECT questions FROM quiz_sessions WHERE session_id = ?",
+            "SELECT questions, document_id FROM quiz_sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         conn.close()
@@ -148,9 +148,55 @@ def _load_existing_session(session_id: str) -> dict | None:
             for q in questions
             if isinstance(q, dict)
         ]
-        return {"questions": questions, "topics": topics}
+        return {
+            "questions": questions,
+            "topics": topics,
+            "document_id": row["document_id"],
+        }
     except Exception as e:
         logger.warning(f"既存セッションの読み込みエラー: {e}")
+        return None
+
+
+def _load_document_as_source_info(document_id: int) -> dict | None:
+    """Build a source_info dict from the ``documents`` table so callers
+    can pass it as ``source_info_override`` to the service layer and
+    skip the Camoufox/safe_fetch re-scrape entirely.
+
+    The returned shape matches what ``ContentService.fetch`` produces,
+    with two caveats that are acceptable for the regenerate flow:
+      - ``pages`` is [] (per-page URLs are not persisted; per-question
+        source_hint resolution falls back to the top-level source URL).
+      - ``depth`` defaults to 1 (not preserved in the documents table).
+    """
+    try:
+        from app.database import get_connection
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT id, title, url, content, source_type, page_count, doc_types "
+            "FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        try:
+            doc_types = json.loads(row["doc_types"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            doc_types = []
+        return {
+            "title":       row["title"] or "",
+            "content":     row["content"] or "",
+            "source":      row["url"] or "plain_text",
+            "type":        row["source_type"] or "url_deep",
+            "depth":       1,
+            "doc_types":   doc_types,
+            "page_count":  row["page_count"] or 1,
+            "pages":       [],
+            "document_id": row["id"],
+        }
+    except Exception as e:
+        logger.warning(f"ドキュメント読み込みエラー: {e}")
         return None
 
 
@@ -191,11 +237,19 @@ def generate_quiz():
     append_sid = params.pop("append_to_session_id", None)
     existing_questions: list[dict] = []
     existing_topics: list[str] = []
+    source_info_override: dict | None = None
     if append_sid:
         loaded = _load_existing_session(append_sid)
         if loaded:
             existing_questions = loaded["questions"]
             existing_topics = loaded["topics"]
+            # Re-use the already-scraped content stored in the
+            # `documents` table instead of re-scraping the URL. Saves a
+            # Camoufox round-trip per regenerate.
+            if loaded.get("document_id"):
+                source_info_override = _load_document_as_source_info(
+                    loaded["document_id"],
+                )
         else:
             append_sid = None  # fall back
 
@@ -205,6 +259,8 @@ def generate_quiz():
     if append_sid:
         service_kwargs["session_id"] = append_sid
         service_kwargs["existing_topics"] = existing_topics
+        if source_info_override is not None:
+            service_kwargs["source_info_override"] = source_info_override
 
     # Persistence-level params (used by _save_quiz_session). Keep the
     # append flag here so the save path knows to UPDATE.
@@ -267,6 +323,18 @@ def regenerate_question():
     except ValidationError as e:
         return jsonify({"error": humanize_first_error(e)}), 400
 
+    # If the failing question belongs to a saved session whose source
+    # was already scraped and stored, reuse that content instead of
+    # re-scraping. Falls back to a live fetch silently if the session
+    # row has no document_id or the documents row is missing.
+    source_info_override: dict | None = None
+    if req.session_id:
+        loaded = _load_existing_session(req.session_id)
+        if loaded and loaded.get("document_id"):
+            source_info_override = _load_document_as_source_info(
+                loaded["document_id"],
+            )
+
     try:
         question = _quiz_service.generate_single_question(
             source=req.source,
@@ -277,6 +345,7 @@ def regenerate_question():
             doc_types=req.doc_types,
             ollama_options=req.ollama_options,
             exclude_topics=req.exclude_topics,
+            source_info_override=source_info_override,
         )
     except ConnectionError as e:
         return jsonify({"error": str(e)}), 503

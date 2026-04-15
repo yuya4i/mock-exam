@@ -143,6 +143,7 @@ class QuizService:
         ollama_options: dict | None = None,
         session_id: str | None = None,
         existing_topics: list[str] | None = None,
+        source_info_override: dict | None = None,
     ):
         """
         スクレイピング→1問ずつ生成のジェネレータ。
@@ -155,6 +156,12 @@ class QuizService:
               にする。
             - done イベントで返す ``questions`` は **新規分のみ**。マージは
               呼び出し側 (route handler) が行う。
+
+        ``source_info_override`` (dict):
+            スクレイピング結果の shape と同じ辞書を渡すと、ContentService
+            の fetch を完全にバイパスする。保存済みセッションの再生成で
+            ``documents`` テーブルから content を読み込んでそのまま使う
+            ユースケース想定 (再スクレイプ不要)。
         """
         if levels is None:
             levels = ["K2", "K3", "K4"]
@@ -165,7 +172,10 @@ class QuizService:
             session_id = str(uuid.uuid4())
 
         # ── Step 1: コンテンツ取得 ──
-        source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
+        if source_info_override is not None:
+            source_info = source_info_override
+        else:
+            source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
 
         yield ("source_info", {
             "session_id":  session_id,
@@ -281,6 +291,7 @@ class QuizService:
         ollama_options: dict | None = None,
         exclude_topics: list[str] | None = None,
         qnum: int = 1,
+        source_info_override: dict | None = None,
     ) -> dict | None:
         """Generate exactly one question. Returns the question dict, or
         None if both attempts fail to parse.
@@ -290,14 +301,18 @@ class QuizService:
         of the question being replaced. Caller is responsible for
         composing that list (existing topics + failing topic).
 
-        This intentionally re-uses the same content fetch path as
-        ``generate_incremental`` so source caching (TTLCache, 1 hour)
-        kicks in and the regen call is essentially free network-wise.
+        ``source_info_override`` (dict) — same contract as
+        ``generate_incremental``: when provided, skips ContentService
+        entirely. Used by the saved-session regenerate paths to avoid
+        re-scraping content we already have in the ``documents`` table.
         """
         if doc_types is None:
             doc_types = ["table", "csv", "pdf", "png"]
 
-        source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
+        if source_info_override is not None:
+            source_info = source_info_override
+        else:
+            source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
 
         options = {"temperature": 0.7, "num_predict": 1024}
         if ollama_options:
