@@ -256,6 +256,14 @@ event: error          → Fatal error
 - **WSL2**: Vite is configured with `usePolling: true` for Docker volume file watching to work correctly.
 - **Dependency pinning**: runtime deps (`axios`, `chart.js`, `vue-chartjs`, `vite`) are pinned to exact versions to keep Docker builds reproducible. `vue`, `vue-router`, `pinia`, and `@vitejs/plugin-vue` currently use a caret range; Phase 1 of the hardening roadmap tightens this.
 
+### Further reading
+
+- [`docs/architecture.md`](docs/architecture.md) — component map, endpoint inventory, sequence diagrams, persistence schema
+- [`docs/security/threat-model.md`](docs/security/threat-model.md) — STRIDE pass + ranked risk register + attack tree
+- [`docs/operations/runbook.md`](docs/operations/runbook.md) — env vars, incident scenarios, recovery, monitoring
+- [`docs/development/contributing.md`](docs/development/contributing.md) — branch / commit conventions, CI gates, "how to add an endpoint"
+- [`SECURITY.md`](SECURITY.md) — trust boundaries, SSRF policy, opt-in env vars, disclosure
+
 ### License
 
 MIT License
@@ -501,6 +509,14 @@ event: error          → 致命的エラー
 - **スクレイピング制限** - 1回のクロールで最大50ページ。BFSは同一ドメイン内のみ。結果はSQLiteにcontent_hashで重複排除してキャッシュされます。外部フェッチは既定でパブリックIPのみ許可（`SECURITY.md` 参照）。
 - **WSL2環境** - Dockerボリュームのファイル変更検知のため、Viteは `usePolling: true` で設定済みです。
 - **依存バージョン** - 実行時依存（`axios` / `chart.js` / `vue-chartjs` / `vite`）は完全固定。`vue` / `vue-router` / `pinia` / `@vitejs/plugin-vue` は現時点でキャレット範囲。Phase 1 で厳格化予定。
+
+### 関連ドキュメント
+
+- [`docs/architecture.md`](docs/architecture.md) — コンポーネント / エンドポイント / シーケンス / DBスキーマ
+- [`docs/security/threat-model.md`](docs/security/threat-model.md) — STRIDE / リスクランキング / Attack tree
+- [`docs/operations/runbook.md`](docs/operations/runbook.md) — 環境変数 / インシデント手順 / 復旧 / 監視推奨
+- [`docs/development/contributing.md`](docs/development/contributing.md) — ブランチ規約 / CI / 「エンドポイント追加の手順」
+- [`SECURITY.md`](SECURITY.md) — 信頼境界 / SSRFポリシー / opt-in env / 開示窓口
 
 ### ライセンス
 

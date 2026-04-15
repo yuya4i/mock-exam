@@ -45,6 +45,14 @@ If you expose this service beyond `127.0.0.1`, you MUST add at minimum:
 
 ---
 
+> **Companion docs**:
+> [`docs/architecture.md`](docs/architecture.md) maps every component
+> and data flow.
+> [`docs/security/threat-model.md`](docs/security/threat-model.md)
+> applies STRIDE to those flows and ranks the residual risks.
+> [`docs/operations/runbook.md`](docs/operations/runbook.md) covers
+> incident response and recovery.
+
 ## 3. Trust boundaries
 
 ```
