@@ -40,6 +40,7 @@ from pydantic import (
 __all__ = [
     "ContentRequest",
     "QuizGenerateRequest",
+    "RegenerateQuestionRequest",
     "DocumentCreateRequest",
     "AnswersRequest",
     "ValidationError",
@@ -151,6 +152,45 @@ class QuizGenerateRequest(_ScrapeMixin):
     @field_validator("append_to_session_id", mode="before")
     @classmethod
     def _blank_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+
+# --------------------------------------------------------------------------
+# Single-question regenerate
+# --------------------------------------------------------------------------
+class RegenerateQuestionRequest(_ScrapeMixin):
+    """Body for ``POST /api/quiz/regenerate-question``.
+
+    Used when the frontend detects an unrenderable artifact (currently:
+    a Mermaid SyntaxError) and wants to swap that single question for a
+    fresh one. The new question must avoid the topics the user has
+    already seen — including the failing one — to prevent oscillation.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    model: str = Field(min_length=1, max_length=256)
+    level: KLevel = "K2"
+    difficulty: Difficulty = "medium"
+    ollama_options: dict = Field(default_factory=dict)
+
+    # Topics already in the session (free-form short strings). The
+    # diversity prompt seeds these so the regenerated question explores
+    # a different theme.
+    exclude_topics: list[str] = Field(default_factory=list, max_length=200)
+
+    # Optional: if both are provided, the server replaces the matching
+    # question in the SQLite session so the fix is persisted.
+    session_id: str | None = Field(default=None, max_length=64)
+    question_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator("session_id", "question_id", mode="before")
+    @classmethod
+    def _blank_to_none_id(cls, v):
         if v is None:
             return None
         if isinstance(v, str) and v.strip() == "":

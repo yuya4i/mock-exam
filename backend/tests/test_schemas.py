@@ -14,6 +14,7 @@ from app.api._schemas import (
     ContentRequest,
     DocumentCreateRequest,
     QuizGenerateRequest,
+    RegenerateQuestionRequest,
     ValidationError,
     humanize_first_error,
 )
@@ -150,3 +151,66 @@ def test_answers_defaults_zero_scores():
     req = AnswersRequest.model_validate({"answers": {"q1": "a"}})
     assert req.score_correct == 0
     assert req.score_total == 0
+
+
+# ------------------------------------------------------------------
+# RegenerateQuestionRequest
+# ------------------------------------------------------------------
+def test_regenerate_question_minimal():
+    req = RegenerateQuestionRequest.model_validate({
+        "source": "https://example.com",
+        "model": "qwen2.5",
+    })
+    assert req.level == "K2"
+    assert req.difficulty == "medium"
+    assert req.exclude_topics == []
+    assert req.session_id is None
+    assert req.question_id is None
+
+
+def test_regenerate_question_full():
+    req = RegenerateQuestionRequest.model_validate({
+        "source": "https://example.com",
+        "model": "qwen2.5",
+        "level": "K3",
+        "difficulty": "hard",
+        "exclude_topics": ["topicA (K2)", "topicB (K3)"],
+        "session_id": "sess-123",
+        "question_id": "Q005",
+    })
+    assert req.level == "K3"
+    assert req.difficulty == "hard"
+    assert req.exclude_topics == ["topicA (K2)", "topicB (K3)"]
+    assert req.session_id == "sess-123"
+    assert req.question_id == "Q005"
+
+
+def test_regenerate_question_blank_ids_become_none():
+    req = RegenerateQuestionRequest.model_validate({
+        "source": "https://example.com",
+        "model": "qwen2.5",
+        "session_id": "",
+        "question_id": "  ",
+    })
+    assert req.session_id is None
+    assert req.question_id is None
+
+
+def test_regenerate_question_invalid_level():
+    with pytest.raises(ValidationError) as exc:
+        RegenerateQuestionRequest.model_validate({
+            "source": "https://example.com",
+            "model": "qwen2.5",
+            "level": "K9",
+        })
+    assert "level" in humanize_first_error(exc.value)
+
+
+def test_regenerate_question_exclude_topics_overflow():
+    """exclude_topics is bounded so a malicious caller can't cram a
+    multi-MiB list through this endpoint."""
+    huge = [f"t{i}" for i in range(201)]
+    with pytest.raises(ValidationError):
+        RegenerateQuestionRequest.model_validate({
+            "source": "x", "model": "y", "exclude_topics": huge,
+        })

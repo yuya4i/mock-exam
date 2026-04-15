@@ -59,14 +59,14 @@
           <!-- 選択中セッションがある時のみ表示。現在のフォーム設定で 20 問追加生成する。 -->
           <button
             v-if="selectedSessionId && !quizStore.generating"
-            class="btn btn-secondary regenerate-btn"
+            class="btn btn-primary regenerate-btn"
             @click="regenerateForCurrentSession"
             :disabled="!canRegenerate"
             :title="canRegenerate
               ? '現在の設定 (モデル / 知識レベル / 難易度 / ドキュメント種別) で 20 問を追加生成します'
               : 'モデルとコンテンツソースを設定してください'"
           >
-            🔁 +20問追加生成
+            🔁 再生成 (+20問追加)
           </button>
         </div>
         <div class="saved-sessions-list">
@@ -445,21 +445,23 @@
             :user-answer="quizStore.userAnswers[q.id]"
             :revealed="quizStore.revealed[q.id]"
             :source-info="quizStore.result.source_info"
+            :regenerating="regeneratingQuestionIds.includes(q.id)"
             @answer="quizStore.setAnswer(q.id, $event)"
             @reveal="quizStore.revealAnswer(q.id)"
+            @diagram-error="onDiagramError"
           />
         </TransitionGroup>
       </div>
     </div>
 
-    <!-- 右パネル: スクレイピング経過 -->
+    <!-- 右パネル: 状況に応じてスクレイピング経過 / 選択ドキュメントプレビュー / アイドル を切替 -->
     <aside class="progress-panel" :class="{ 'mobile-open': progressMobileOpen }">
       <div class="progress-header">
-        <span class="progress-title">スクレイピング経過</span>
+        <span class="progress-title">{{ rightPanelTitle }}</span>
         <button class="mobile-close-btn" @click="progressMobileOpen = false">&#10005;</button>
       </div>
 
-      <!-- スクレイピング中 or 完了 -->
+      <!-- (1) スクレイピング中 or 完了 — 進行中フローが最優先 -->
       <div v-if="scrapeStore.events.length > 0" class="progress-content">
         <div class="progress-summary">
           <span v-if="scrapeStore.isScraping" class="spinner" style="width:12px;height:12px"></span>
@@ -490,9 +492,47 @@
         </div>
       </div>
 
-      <!-- アイドル状態 -->
+      <!-- (2) 選択中ドキュメントのプレビュー — スクレイピングが無い時のみ表示 -->
+      <div v-else-if="loadingSelectedDoc" class="progress-loading">
+        <span class="spinner" style="width:14px;height:14px"></span>
+        <span>ドキュメント読込中...</span>
+      </div>
+      <div v-else-if="selectedDocData" class="doc-preview">
+        <div class="doc-preview-meta">
+          <div class="doc-preview-title">
+            <span class="doc-preview-icon">{{ sourceIcon(selectedDocData.source_type) }}</span>
+            <span class="doc-preview-name">{{ selectedDocData.title || selectedDocData.url || '無題' }}</span>
+          </div>
+          <div class="doc-preview-stats">
+            <span v-if="selectedDocData.page_count" class="doc-preview-chip">
+              📄 {{ selectedDocData.page_count }}ページ
+            </span>
+            <span v-if="selectedDocData.scraped_at" class="doc-preview-chip">
+              📅 {{ formatDate(selectedDocData.scraped_at) }}
+            </span>
+            <span
+              v-for="dt in (selectedDocData.doc_types || [])"
+              :key="dt"
+              class="doc-preview-chip"
+            >{{ docTypeLabel(dt) }}</span>
+          </div>
+          <a
+            v-if="selectedDocData.url"
+            :href="selectedDocData.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="doc-preview-url"
+          >{{ selectedDocData.url }} ↗</a>
+        </div>
+        <div class="doc-preview-content">
+          <div class="doc-preview-content-label">本文プレビュー</div>
+          <pre class="doc-preview-content-body">{{ docPreviewExcerpt }}</pre>
+        </div>
+      </div>
+
+      <!-- (3) 完全アイドル -->
       <div v-else class="progress-idle">
-        <p>スクレイピング開始後に経過が表示されます</p>
+        <p>📚 サイドバーから保存済みコンテンツを選ぶか、新しいURLでスクレイピングを開始してください。</p>
       </div>
     </aside>
 
@@ -527,6 +567,13 @@ const resultsStore = useResultsStore()
 const savedSessions = ref([])
 const loadingSavedSessions = ref(false)
 const selectedSessionId = ref(null)
+
+// 選択中ドキュメントの中身（右パネルでプレビュー表示）
+const selectedDocData = ref(null)
+const loadingSelectedDoc = ref(false)
+
+// 自動再生成中の問題ID集合（重複呼び出し防止 + UI表示）
+const regeneratingQuestionIds = ref([])
 
 const params = ref({
   source:     '',
@@ -866,6 +913,9 @@ async function selectDocument(doc) {
   params.value.source = doc.url || doc.title || ''
   sidebarMobileOpen.value = false
 
+  // 右パネルに表示するためにドキュメント本文を取得（並行）
+  fetchSelectedDocPreview(doc.id).catch(() => {})
+
   // 生成済みセッションを取得
   savedSessions.value = []
   selectedSessionId.value = null
@@ -919,6 +969,24 @@ async function loadSavedSession(sessionId) {
 // パラメータは現在のフォーム設定を踏襲。count だけ強制で 20。
 // ソース URL がフォームに無い場合は読み込み済みセッションの
 // source_info からフォールバックする。
+// 右パネルのタイトルと本文プレビューを文脈で切替
+const rightPanelTitle = computed(() => {
+  if (scrapeStore.events.length > 0 || scrapeStore.isScraping) {
+    return 'スクレイピング経過'
+  }
+  if (loadingSelectedDoc.value || selectedDocData.value) {
+    return '選択中コンテンツ'
+  }
+  return 'コンテンツ情報'
+})
+
+const docPreviewExcerpt = computed(() => {
+  const c = selectedDocData.value?.content || ''
+  const MAX = 4000
+  if (c.length <= MAX) return c
+  return c.slice(0, MAX) + '\n\n... (省略)'
+})
+
 const canRegenerate = computed(() => {
   if (!selectedSessionId.value) return false
   if (quizStore.generating) return false
@@ -954,6 +1022,93 @@ async function regenerateForCurrentSession() {
     } catch (_) {
       // 一覧の更新失敗はサイレント (生成自体は成功している)。
     }
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// Mermaid SyntaxError → 単問差し替え
+// ────────────────────────────────────────────────────────────
+//
+// QuestionCard が renderDiagram() で落ちると `diagram-error` を上げて
+// くる。問題ごと差し替えるため /api/quiz/regenerate-question を叩き、
+// 既存の questions[] の該当インデックスを上書きする。
+// session_id + question_id を渡すと SQLite 側もアトミックに UPDATE
+// されるので、再読み込み時に壊れた問題が復活しない。
+async function onDiagramError(payload) {
+  const failedId = payload.questionId
+  if (!failedId) return
+  if (regeneratingQuestionIds.value.includes(failedId)) return
+  if (!quizStore.result?.questions) return
+  if (!params.value.model) return  // モデルなしでは差し替え不能
+
+  // 重複呼び出しガード
+  regeneratingQuestionIds.value = [...regeneratingQuestionIds.value, failedId]
+
+  // 既存トピック (失敗した問題のトピックも含めて全部) を渡し、
+  // LLM に「これらと違う観点で」と指示する。
+  const allQuestions = quizStore.result.questions
+  const excludeTopics = allQuestions
+    .filter((q) => q.topic)
+    .map((q) => `${q.topic} (${q.level || 'K2'})`)
+
+  const sourceUrl = params.value.source
+    || quizStore.result?.source_info?.source
+    || ''
+  if (!sourceUrl) {
+    regeneratingQuestionIds.value = regeneratingQuestionIds.value.filter(
+      (id) => id !== failedId,
+    )
+    return
+  }
+
+  const failedQuestion = allQuestions.find((q) => q.id === failedId)
+  const level = failedQuestion?.level || 'K2'
+
+  try {
+    const res = await api.post('/quiz/regenerate-question', {
+      source: sourceUrl,
+      model: params.value.model,
+      level,
+      difficulty: params.value.difficulty,
+      depth: params.value.depth,
+      doc_types: params.value.doc_types,
+      exclude_topics: excludeTopics,
+      session_id: quizStore.result.session_id || '',
+      question_id: failedId,
+    })
+    const replacement = res.data?.question
+    if (!replacement) return
+
+    // ID は使い回す (ユーザーの解答状態と整合させるため)
+    replacement.id = failedId
+
+    const idx = quizStore.result.questions.findIndex((q) => q.id === failedId)
+    if (idx >= 0) {
+      quizStore.result.questions.splice(idx, 1, replacement)
+    }
+  } catch (e) {
+    console.warn('問題差し替えAPIエラー:', e?.message || e)
+  } finally {
+    regeneratingQuestionIds.value = regeneratingQuestionIds.value.filter(
+      (id) => id !== failedId,
+    )
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 選択中ドキュメントの本文をプレビュー用に取得
+// ────────────────────────────────────────────────────────────
+async function fetchSelectedDocPreview(docId) {
+  selectedDocData.value = null
+  if (!docId) return
+  loadingSelectedDoc.value = true
+  try {
+    const res = await api.get(`/documents/${docId}`)
+    selectedDocData.value = res.data
+  } catch (e) {
+    console.warn('ドキュメント取得エラー:', e?.message || e)
+  } finally {
+    loadingSelectedDoc.value = false
   }
 }
 
@@ -1806,6 +1961,96 @@ watch(() => params.value.source, (newVal) => {
   text-align: center;
   font-size: 12px;
   color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.progress-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ========== ドキュメントプレビュー (右パネル) ========== */
+.doc-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+.doc-preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.doc-preview-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.doc-preview-icon { font-size: 16px; flex-shrink: 0; }
+.doc-preview-name { word-break: break-word; }
+.doc-preview-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 4px;
+}
+.doc-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.doc-preview-url {
+  font-size: 11px;
+  color: var(--accent-hover);
+  text-decoration: none;
+  word-break: break-all;
+  transition: color 0.15s;
+}
+.doc-preview-url:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.doc-preview-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.doc-preview-content-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.doc-preview-content-body {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 50vh;
+  overflow-y: auto;
 }
 
 /* ========== モバイルボタン ========== */
