@@ -22,12 +22,11 @@
     <!-- 問題文 -->
     <p class="q-text">{{ question.question }}</p>
 
-    <!-- Mermaid図表（存在する場合） -->
-    <div v-if="question.diagram" class="q-diagram" ref="diagramEl">
-      <!-- mermaid.render() が返すサニタイズ済みSVGを描画 -->
-      <div v-if="diagramSvg" v-html="diagramSvg"></div>
-      <!-- フォールバック: レンダリング失敗時はソースをコードブロックで表示 -->
-      <pre v-else-if="question.diagram" class="diagram-fallback">{{ question.diagram }}</pre>
+    <!-- Mermaid図表: SVG が生成できた時だけ表示する (空枠を出さない)。
+         レンダ失敗時は親が onDiagramError を受けて単問差し替えるので、
+         以前のような raw Mermaid ソースのフォールバックは出さない。 -->
+    <div v-if="question.diagram && diagramSvg" class="q-diagram">
+      <div v-html="diagramSvg"></div>
     </div>
 
     <!-- 選択肢 -->
@@ -119,7 +118,6 @@ const sourceLink = computed(() => {
 
 const emit = defineEmits(['answer', 'reveal', 'diagram-error'])
 
-const diagramEl = ref(null)
 const diagramSvg = ref('')
 
 // Track whether we already asked the parent to regenerate this card.
@@ -128,7 +126,10 @@ const diagramSvg = ref('')
 let _regenerateRequested = false
 
 async function renderDiagram() {
-  if (!props.question.diagram || !diagramEl.value) return
+  if (!props.question.diagram) return
+  // 再レンダ前は前回の SVG を一旦クリアしておく (失敗時に古い SVG が
+  // 残らないように)。
+  diagramSvg.value = ''
   try {
     // Mermaid は 'mermaid' パッケージを npm で解決する（バージョン固定）。
     // 以前は cdn.jsdelivr.net から動的 import していたが、オフライン動作
@@ -374,13 +375,6 @@ function choiceClass(key) {
 .q-diagram :deep(svg .section),
 .q-diagram :deep(svg .face) {
   stroke: #6366f1 !important;
-}
-.diagram-fallback {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  text-align: left;
-  margin: 0;
 }
 
 .choices { display: flex; flex-direction: column; gap: 8px; }
