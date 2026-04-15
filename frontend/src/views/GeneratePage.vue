@@ -56,18 +56,6 @@
           <span class="saved-sessions-title">📚 この資料で生成済みの問題セット</span>
           <span v-if="loadingSavedSessions" class="spinner" style="width:12px;height:12px"></span>
           <span v-else class="saved-count">{{ savedSessions.length }}件</span>
-          <!-- 選択中セッションがある時のみ表示。現在のフォーム設定で 20 問追加生成する。 -->
-          <button
-            v-if="selectedSessionId && !quizStore.generating"
-            class="btn btn-primary regenerate-btn"
-            @click="regenerateForCurrentSession"
-            :disabled="!canRegenerate"
-            :title="canRegenerate
-              ? '現在の設定 (モデル / 知識レベル / 難易度 / ドキュメント種別) で 20 問を追加生成します'
-              : 'モデルとコンテンツソースを設定してください'"
-          >
-            🔁 再生成 (+20問追加)
-          </button>
         </div>
         <div class="saved-sessions-list">
           <button
@@ -268,6 +256,34 @@
               モデルが見つかりません。Ollamaが起動しているか確認してください。
             </div>
 
+            <!-- 保存セッションのモデル復元: インストール無しで警告 -->
+            <div
+              v-if="modelLoadWarning"
+              class="alert alert-warning model-missing-notice"
+              style="margin-top:6px"
+            >
+              <div class="missing-notice-head">
+                <span class="capability-icon">⚠️</span>
+                <div>
+                  <div class="capability-title">
+                    保存時のモデル「{{ modelLoadWarning.missing }}」が見つかりません
+                  </div>
+                  <div class="capability-detail">
+                    別のモデルを選択するか、ターミナルで以下を実行してインストールしてください。
+                  </div>
+                </div>
+              </div>
+              <code class="missing-notice-cmd">ollama pull {{ modelLoadWarning.missing }}</code>
+              <div class="missing-notice-actions">
+                <button
+                  class="btn btn-secondary missing-notice-dismiss"
+                  @click="modelLoadWarning = null"
+                >
+                  閉じる
+                </button>
+              </div>
+            </div>
+
             <!-- モデル容量チェック: 注意レベル（🟡） -->
             <div
               v-if="capabilityWarning && capabilityWarning.level === 'warn'"
@@ -339,6 +355,19 @@
             <span v-if="quizStore.generating" class="spinner"></span>
             <span v-else>&#10024;</span>
             {{ quizStore.generating ? '生成中...' : '問題を生成する' }}
+          </button>
+          <!-- 保存済みセッションを選択中のときは、その隣に「再生成 (+20問)」を出す。
+               選択ドキュメントに対する追加生成 (append_to_session_id) を実行。 -->
+          <button
+            v-if="selectedSessionId && !quizStore.generating"
+            class="btn btn-secondary regenerate-btn"
+            @click="regenerateForCurrentSession"
+            :disabled="!canRegenerate"
+            :title="canRegenerate
+              ? '現在の設定 (モデル / 知識レベル / 難易度 / ドキュメント種別) で 20 問を追加生成します'
+              : 'モデルとコンテンツソースを設定してください'"
+          >
+            🔁 再生成 (+20問追加)
           </button>
           <button v-if="quizStore.result" class="btn btn-secondary" @click="quizStore.reset()">
             リセット
@@ -575,6 +604,11 @@ const loadingSelectedDoc = ref(false)
 // 自動再生成中の問題ID集合（重複呼び出し防止 + UI表示）
 const regeneratingQuestionIds = ref([])
 
+// セッションをロードした時に「保存時のモデルが現在インストールされていない」旨を
+// 知らせるための警告メッセージ。Setting to null clears the alert.
+// shape: { missing: string, installed: string[] } | null
+const modelLoadWarning = ref(null)
+
 const params = ref({
   source:     '',
   model:      '',
@@ -583,6 +617,16 @@ const params = ref({
   difficulty: 'medium',
   depth:      1,
   doc_types:  ['table', 'csv', 'pdf', 'png'],
+})
+
+// ユーザーが手動でモデルを変更したら警告は古くなるので消す。
+// (保存時のモデル名が表示されている状態のまま新しい有効モデルを選んだ
+//  時に「警告と選択肢が矛盾する」見え方を防ぐ。)
+// NOTE: params が宣言された後で watch を張る必要がある (TDZ 回避)。
+watch(() => params.value.model, (newVal) => {
+  if (newVal && modelLoadWarning.value) {
+    modelLoadWarning.value = null
+  }
 })
 
 const difficulties = [
@@ -932,6 +976,7 @@ async function selectDocument(doc) {
 
 async function loadSavedSession(sessionId) {
   selectedSessionId.value = sessionId
+  modelLoadWarning.value = null
   try {
     const data = await resultsStore.getSession(sessionId)
     // quizStore.result の構造に合わせる
@@ -945,6 +990,12 @@ async function loadSavedSession(sessionId) {
         source:     (documents.value.find(d => d.id === data.document_id) || {}).url,
       },
     }
+
+    // 保存時に使われていたモデルをフォームに反映 (再生成ボタン押下時の
+    // パラメータ既定値として使う)。Ollama に当該モデルが入っていない場合
+    // は警告を出し、ユーザーに別モデルの選択を促す。
+    await applySessionModel(data.model)
+
     // 保存済みの回答を復元
     if (data.user_answers && typeof data.user_answers === 'object') {
       quizStore.userAnswers = { ...data.user_answers }
@@ -954,6 +1005,42 @@ async function loadSavedSession(sessionId) {
     }
   } catch (e) {
     console.warn('保存済みセッション読み込みエラー:', e)
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 保存時のモデルをフォームに復元
+// ────────────────────────────────────────────────────────────
+//
+// 保存済みセッションに残っている model 名を params.model に流し込み、
+// 「インストール状況に応じた」UX を出す:
+//   - 入っている  → params.model に設定 (再生成ボタン即押し可)
+//   - 入っていない → 警告メッセージ表示。`ollama pull <name>` を案内
+//   - モデル一覧が未取得 → 一覧を取りに行ってから再判定
+async function applySessionModel(modelName) {
+  if (!modelName) return
+
+  // 一覧未取得なら fetch (失敗しても続行 — 設定は試みる)
+  if (!modelsStore.models || modelsStore.models.length === 0) {
+    try {
+      await modelsStore.fetchModels()
+    } catch (_) {
+      // 取得失敗時は警告だけ出して params は触らない
+    }
+  }
+
+  const installedNames = (modelsStore.models || []).map((m) => m.name)
+  if (installedNames.includes(modelName)) {
+    params.value.model = modelName
+    modelLoadWarning.value = null
+  } else {
+    // 存在しないモデルを params に入れると select の見た目がおかしくなる
+    // (空の選択肢に見える) ので、明示的に空にしてユーザーに選ばせる。
+    params.value.model = ''
+    modelLoadWarning.value = {
+      missing: modelName,
+      installed: installedNames,
+    }
   }
 }
 
@@ -1680,12 +1767,41 @@ watch(() => params.value.source, (newVal) => {
   border-radius: 10px;
 }
 .regenerate-btn {
-  font-size: 11px;
-  padding: 4px 10px;
   white-space: nowrap;
 }
-.regenerate-btn:disabled {
-  opacity: 0.5;
+
+/* 保存時モデル不在の警告 */
+.model-missing-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.missing-notice-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.missing-notice-cmd {
+  display: block;
+  padding: 6px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  user-select: all;
+  word-break: break-all;
+}
+.missing-notice-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.missing-notice-dismiss {
+  font-size: 11px;
+  padding: 4px 12px;
 }
 .saved-sessions-list {
   display: flex;
