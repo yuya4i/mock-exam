@@ -13,7 +13,6 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - FLASK_ENV=${FLASK_ENV:-production}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:1234}
-      - HISTORY_FILE=/app/.cache/history.json
       # Phase 0/1 hardening knobs (all optional, see SECURITY.md):
       #   API_TOKEN               — when set, /api/* requires Bearer auth
       #   ALLOW_HTTP              — allow http:// URLs for scraping

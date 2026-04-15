@@ -162,7 +162,6 @@ mermaid's built-in sanitization. Pinning mermaid to a specific version
 |-------------------------------|--------------------------------------------|-------------------------------------|
 | Scraped documents             | SQLite `documents` table + in-container volume | No automatic purge `[PLANNED: S-015]` |
 | Quiz sessions / answers       | SQLite `quiz_sessions` table               | No automatic purge                  |
-| Legacy JSON history           | `history.json` in container volume         | `MAX_HISTORY=100` (oldest pruned)   |
 | Ollama model weights          | Host (outside container)                   | Managed by user                     |
 | Logs                          | Container stdout                           | Managed by Docker log driver        |
 
@@ -173,9 +172,9 @@ contain whatever the user submits. Treat the SQLite volume as sensitive.
 
 ## 8. Known limitations
 
-- `HistoryService` and the SQLite `quiz_sessions` table are written **in
-  parallel**. A failure in one path does not roll back the other. This will be
-  consolidated to a single source of truth in Phase 1 (`M-006`).
+- ~~`HistoryService` and the SQLite `quiz_sessions` table are written **in
+  parallel**.~~ **Resolved in P1-E**: `HistoryService` and `/api/history*`
+  were removed; SQLite `quiz_sessions` is now the single source of truth.
 - `_download_file` in Phase 0 uses the hardened `safe_fetch` client; however,
   `camoufox` in Phase 0 only validates URLs before `page.goto`. In-page JS that
   triggers further navigation is not intercepted.
