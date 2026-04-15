@@ -232,22 +232,73 @@ export const useQuizStore = defineStore('quiz', () => {
     abortController?.abort()
   }
 
+  // ────────────────────────────────────────────────────────────
+  // 自動保存 (answers / score) — 分析タブが最新スコアで更新されるため
+  // ────────────────────────────────────────────────────────────
+  //
+  // setAnswer / revealAnswer / revealAll の度に呼ぶとサーバーが連打
+  // されるので 600ms debounce。最終的に analyticsタブ (ResultsPage)
+  // が読む quiz_sessions.user_answers / score_correct / score_total
+  // を追随させる。
+  let _saveTimer = null
+
+  function _scheduleSaveAnswers() {
+    if (_saveTimer) clearTimeout(_saveTimer)
+    _saveTimer = setTimeout(() => {
+      _saveTimer = null
+      _flushSaveAnswers().catch(() => {})
+    }, 600)
+  }
+
+  async function _flushSaveAnswers() {
+    const sid = result.value?.session_id
+    if (!sid) return
+    const answers = { ...userAnswers.value }
+    if (Object.keys(answers).length === 0) return
+    const s = score.value || { correct: 0, total: 0 }
+    try {
+      await api.post(`/results/${sid}/answers`, {
+        answers,
+        score_correct: s.correct,
+        score_total: s.total,
+      })
+      // 分析タブを持っている useResultsStore を最新化。タブが mount
+      // されていなくても Pinia の store 自体は常駐しているので、次に
+      // ResultsPage へ遷移した時に既に最新値で表示される。
+      try {
+        const rs = useResultsStore()
+        await rs.fetchResults()
+      } catch (_) {
+        // resultsStore が未定義 (独立動作) でも致命ではない
+      }
+    } catch (e) {
+      console.warn('回答保存エラー:', e?.message || e)
+    }
+  }
+
   function setAnswer(questionId, choice) {
     userAnswers.value[questionId] = choice
+    _scheduleSaveAnswers()
   }
 
   function revealAnswer(questionId) {
     revealed.value[questionId] = true
+    _scheduleSaveAnswers()
   }
 
   function revealAll() {
     result.value?.questions.forEach((q) => {
       revealed.value[q.id] = true
     })
+    _scheduleSaveAnswers()
   }
 
   function reset() {
     abort()
+    if (_saveTimer) {
+      clearTimeout(_saveTimer)
+      _saveTimer = null
+    }
     result.value      = null
     userAnswers.value = {}
     revealed.value    = {}
