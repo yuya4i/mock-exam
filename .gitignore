@@ -12,3 +12,8 @@ dist/
 .playwright-mcp/
 /*.png
 /*.jpeg
+
+# Playwright e2e (P2-B)
+test-results/
+playwright-report/
+playwright/.cache/
