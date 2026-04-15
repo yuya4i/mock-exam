@@ -18,6 +18,15 @@ concurrency:
 permissions:
   contents: read
 
+# Opt every JavaScript action into the Node 24 runtime so we stop
+# eating the "Node.js 20 actions are deprecated" annotation on every
+# job. GitHub will flip Node 24 to the default on 2026-06-02 anyway;
+# this is just an early opt-in. Once actions/checkout, setup-python,
+# setup-node, and cache ship a version that defaults to Node 24 we
+# can drop this.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   # ----------------------------------------------------------------------
   # Backend: pytest suite (52 cases as of Phase 1).
