@@ -143,14 +143,24 @@ mermaid's built-in sanitization. Pinning mermaid to a specific version
 
 ## 6. Authentication & authorization
 
-**Current state**: no authentication on any endpoint.
+**Current state (P1-A + P1-G)**:
 
-**Planned (Phase 1)**:
-
-- opt-in `API_TOKEN` env var. When set, all `/api/*` requests must include
+- Opt-in `API_TOKEN` env var. When set, all `/api/*` requests must include
   `Authorization: Bearer <token>`. When unset, the API remains open for local
   dev.
-- Startup-time warning when the backend binds to `0.0.0.0` without `API_TOKEN`.
+- Startup warning when the backend binds non-loopback addresses without
+  `API_TOKEN`.
+- Comparison uses `hmac.compare_digest` (constant-time).
+- `/api/health` is the only exempt path so monitoring probes work without
+  credentials.
+- The browser SPA stores the token in `localStorage` (configured via
+  `Settings → API 認証トークン`) and sends it via the `Authorization`
+  header on every call — including the two SSE endpoints, which the
+  frontend now consumes via `fetch` + ReadableStream rather than
+  `EventSource`. Tokens never appear in URLs.
+
+**Operator notes**:
+
 - Do NOT store the token in `.env` that is committed; use
   `docker compose --env-file` or a secrets manager.
 
