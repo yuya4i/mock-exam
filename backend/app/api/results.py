@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 from app.database import get_connection
-from app.api._validation import parse_int
+from app.api._validation import parse_int  # query-param int parsing
+from app.api._schemas import (
+    AnswersRequest,
+    ValidationError,
+    humanize_first_error,
+)
 
 results_bp = Blueprint("results", __name__)
 
@@ -230,25 +235,14 @@ def save_answers(session_id: str):
     Body: {answers: {qId: "a"}, score_correct: N, score_total: N}
     """
     body = request.get_json(silent=True) or {}
-    answers = body.get("answers", {})
-    if not isinstance(answers, dict) or not answers:
-        return jsonify({"error": "answers は非空の辞書で指定してください。"}), 400
+    try:
+        req = AnswersRequest.model_validate(body)
+    except ValidationError as e:
+        return jsonify({"error": humanize_first_error(e)}), 400
 
-    # score_correct / score_total are optional, but if present they must be
-    # non-negative integers. Reject non-numeric / negative values with 400
-    # so the DB never ingests something that later breaks aggregation.
-    score_correct, err = parse_int(
-        body.get("score_correct"), "score_correct",
-        default=0, min_val=0, max_val=1_000_000,
-    )
-    if err:
-        return jsonify({"error": err}), 400
-    score_total, err = parse_int(
-        body.get("score_total"), "score_total",
-        default=0, min_val=0, max_val=1_000_000,
-    )
-    if err:
-        return jsonify({"error": err}), 400
+    answers = req.answers
+    score_correct = req.score_correct
+    score_total = req.score_total
 
     conn = get_connection()
     try:
