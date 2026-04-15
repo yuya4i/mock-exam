@@ -6,24 +6,16 @@ import json
 import logging
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 from app.services.quiz_service import QuizService
-from app.services.content_service import MAX_DEPTH
-from app.api._validation import (
-    parse_int,
-    parse_non_empty_str,
-    parse_str_enum,
-    parse_str_list,
+from app.api._schemas import (
+    QuizGenerateRequest,
+    ValidationError,
+    humanize_first_error,
 )
 
 logger = logging.getLogger(__name__)
 
 quiz_bp = Blueprint("quiz", __name__)
 _quiz_service = QuizService()
-
-VALID_DOC_TYPES = ["table", "csv", "pdf", "png"]
-VALID_LEVELS = ["K1", "K2", "K3", "K4"]
-VALID_DIFFICULTIES = ["easy", "medium", "hard"]
-DEFAULT_LEVELS = ["K2", "K3", "K4"]
-DEFAULT_DIFFICULTY = "medium"
 
 
 def _derive_category(title: str, source_url: str) -> str:
@@ -89,67 +81,17 @@ def _save_quiz_session(result: dict, params: dict) -> None:
 
 
 def _parse_request(body: dict) -> tuple[dict | None, str | None]:
-    """リクエストボディを検証・パースして返す。
+    """リクエストボディを Pydantic で検証し、サービス層に渡す dict を返す。
 
     Returns:
         ``(params, None)`` on success, ``(None, error_message)`` on failure.
         Error messages are safe to surface to the client as-is.
     """
-    source, err = parse_non_empty_str(body.get("source"), "source", max_len=2048)
-    if err:
-        return None, err
-
-    model, err = parse_non_empty_str(body.get("model"), "model", max_len=256)
-    if err:
-        return None, err
-
-    count, err = parse_int(
-        body.get("count"), "count", default=5, min_val=1, max_val=20,
-    )
-    if err:
-        return None, err
-
-    depth, err = parse_int(
-        body.get("depth"), "depth", default=1, min_val=1, max_val=MAX_DEPTH,
-    )
-    if err:
-        return None, err
-
-    levels, err = parse_str_list(
-        body.get("levels"), "levels",
-        allowed=VALID_LEVELS, default=DEFAULT_LEVELS,
-    )
-    if err:
-        return None, err
-
-    difficulty, err = parse_str_enum(
-        body.get("difficulty"), "difficulty",
-        allowed=VALID_DIFFICULTIES, default=DEFAULT_DIFFICULTY,
-    )
-    if err:
-        return None, err
-
-    doc_types, err = parse_str_list(
-        body.get("doc_types"), "doc_types",
-        allowed=VALID_DOC_TYPES, default=list(VALID_DOC_TYPES),
-    )
-    if err:
-        return None, err
-
-    ollama_options = body.get("ollama_options", {})
-    if not isinstance(ollama_options, dict):
-        return None, "ollama_options は辞書形式で指定してください。"
-
-    return {
-        "source":         source,
-        "model":          model,
-        "count":          count,
-        "levels":         levels,
-        "difficulty":     difficulty,
-        "depth":          depth,
-        "doc_types":      doc_types,
-        "ollama_options": ollama_options,
-    }, None
+    try:
+        model = QuizGenerateRequest.model_validate(body)
+    except ValidationError as e:
+        return None, humanize_first_error(e)
+    return model.model_dump(), None
 
 
 def _sse(event: str, data: dict) -> str:
