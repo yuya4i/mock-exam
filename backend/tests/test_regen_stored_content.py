@@ -178,6 +178,64 @@ def test_regenerate_endpoint_uses_stored_document(monkeypatch):
     assert called_with_override["source_info"]["document_id"] == 42
 
 
+def test_append_mode_offsets_qnum_past_existing(monkeypatch):
+    """Append mode must number new questions starting AFTER existing ones so
+    the frontend's userAnswers[id] map doesn't accidentally bleed saved
+    answers into fresh questions that reused Q001/Q002/... ids."""
+    from app.api import quiz as quiz_module
+    import app as app_module
+
+    existing_questions = [
+        {"id": f"Q{i:03d}", "level": "K2", "topic": f"t{i}", "question": f"q{i}"}
+        for i in range(1, 11)
+    ]
+    captured = {"qnum_start": None, "exclude_q_texts": None}
+
+    def fake_incremental(**kwargs):
+        captured["qnum_start"] = kwargs.get("qnum_start")
+        captured["exclude_q_texts"] = kwargs.get("exclude_question_texts")
+        # Emit the minimum viable SSE trace so the route completes.
+        yield ("source_info", {"session_id": kwargs.get("session_id"),
+                                "title": "t", "source": "s", "type": "x",
+                                "depth": 1, "doc_types": [], "page_count": 1})
+        yield ("done", {
+            "session_id": kwargs.get("session_id"),
+            "generated_at": "2026-04-15T00:00:00Z",
+            "model": kwargs.get("model"),
+            "question_count": 0, "questions": [],
+            "source_info": {},
+        })
+
+    monkeypatch.setattr(
+        quiz_module._quiz_service, "generate_incremental", fake_incremental,
+    )
+    monkeypatch.setattr(
+        quiz_module, "_load_existing_session",
+        lambda sid: {
+            "questions": existing_questions,
+            "topics": [f"{q['topic']} ({q['level']})" for q in existing_questions],
+            "document_id": None,
+        },
+    )
+
+    client = app_module.app.test_client()
+    r = client.post("/api/quiz/generate", json={
+        "source": "https://example.com",
+        "model": "dummy",
+        "count": 5,
+        "append_to_session_id": "sess-123",
+    })
+    # SSE 200 even with all-empty body.
+    assert r.status_code == 200
+    # The key fix: qnum_start == 11 when 10 existing questions are loaded.
+    assert captured["qnum_start"] == 11, (
+        f"expected qnum_start=11, got {captured['qnum_start']}"
+    )
+    assert captured["exclude_q_texts"] is not None
+    assert len(captured["exclude_q_texts"]) == 10
+    assert captured["exclude_q_texts"][0] == "q1"
+
+
 def test_regenerate_endpoint_without_session_falls_back(monkeypatch):
     """No session_id => no override, service receives None."""
     from app.api import quiz as quiz_module

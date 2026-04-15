@@ -259,6 +259,18 @@ def generate_quiz():
     if append_sid:
         service_kwargs["session_id"] = append_sid
         service_kwargs["existing_topics"] = existing_topics
+        # qnum offset so new questions get IDs starting AFTER existing ones.
+        # Prevents user's saved answers from bleeding into fresh questions
+        # via shared Q00N id keys in the frontend's userAnswers / revealed
+        # state maps.
+        service_kwargs["qnum_start"] = len(existing_questions) + 1
+        # Dedupe guard: reject any LLM output whose question body matches
+        # (normalized) an existing question in this session.
+        service_kwargs["exclude_question_texts"] = [
+            q.get("question", "")
+            for q in existing_questions
+            if isinstance(q, dict)
+        ]
         if source_info_override is not None:
             service_kwargs["source_info_override"] = source_info_override
 
@@ -325,15 +337,24 @@ def regenerate_question():
 
     # If the failing question belongs to a saved session whose source
     # was already scraped and stored, reuse that content instead of
-    # re-scraping. Falls back to a live fetch silently if the session
-    # row has no document_id or the documents row is missing.
+    # re-scraping. Also collect the session's existing question bodies
+    # for the duplicate-detection retry loop so the replacement for a
+    # broken diagram can't happen to be a restatement of another
+    # question already in the set.
     source_info_override: dict | None = None
+    exclude_question_texts: list[str] = []
     if req.session_id:
         loaded = _load_existing_session(req.session_id)
-        if loaded and loaded.get("document_id"):
-            source_info_override = _load_document_as_source_info(
-                loaded["document_id"],
-            )
+        if loaded:
+            exclude_question_texts = [
+                q.get("question", "")
+                for q in loaded["questions"]
+                if isinstance(q, dict)
+            ]
+            if loaded.get("document_id"):
+                source_info_override = _load_document_as_source_info(
+                    loaded["document_id"],
+                )
 
     try:
         question = _quiz_service.generate_single_question(
@@ -346,6 +367,7 @@ def regenerate_question():
             ollama_options=req.ollama_options,
             exclude_topics=req.exclude_topics,
             source_info_override=source_info_override,
+            exclude_question_texts=exclude_question_texts,
         )
     except ConnectionError as e:
         return jsonify({"error": str(e)}), 503

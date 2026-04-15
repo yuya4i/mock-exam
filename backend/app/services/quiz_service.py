@@ -120,6 +120,22 @@ def _build_previous_topics_block(topics: list[str]) -> str:
     )
 
 
+def _normalize_question_text(text: str) -> str:
+    """Normalize a question body for duplicate detection.
+
+    Collapses whitespace, lowercases, and trims trailing punctuation so
+    minor wording differences ("... か？" vs " ...か") that don't change
+    semantic meaning still match. Not a semantic dedupe (we're not
+    embedding) — just a cheap post-generation filter to catch the
+    obvious "LLM echoed the same question again" case.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    t = re.sub(r"\s+", " ", text.strip()).lower()
+    t = re.sub(r"[。？?！!、,.\s]+$", "", t)
+    return t
+
+
 # ======================================================================
 # QuizService
 # ======================================================================
@@ -144,6 +160,8 @@ class QuizService:
         session_id: str | None = None,
         existing_topics: list[str] | None = None,
         source_info_override: dict | None = None,
+        qnum_start: int = 1,
+        exclude_question_texts: list[str] | None = None,
     ):
         """
         スクレイピング→1問ずつ生成のジェネレータ。
@@ -193,6 +211,15 @@ class QuizService:
         generated_topics: list[str] = list(existing_topics) if existing_topics else []
         questions: list[dict] = []
 
+        # Duplicate-text guard. Normalized forms of the existing questions
+        # plus every new question we generate, so the LLM can't echo back
+        # a theme we've already covered. The set grows as we stream.
+        seen_texts: set[str] = {
+            _normalize_question_text(t) for t in (exclude_question_texts or []) if t
+        }
+        # Remove the empty string (from questions that had no "question" field).
+        seen_texts.discard("")
+
         # レベルを問題数に応じてラウンドロビンで割り当て
         level_cycle = levels * ((count // len(levels)) + 1)
 
@@ -201,7 +228,11 @@ class QuizService:
             options.update(ollama_options)
 
         for i in range(count):
-            qnum = i + 1
+            # qnum は append モードで既存件数の続きから振る。
+            # 既存が Q001-Q010 で count=20 の append なら Q011-Q030。
+            # ID 衝突によって新問題がユーザーの既存回答を継承する
+            # (= 回答済み扱いになる) バグを防ぐ。
+            qnum = qnum_start + i
             level = level_cycle[i]
 
             yield ("progress", {
@@ -229,15 +260,30 @@ class QuizService:
 
             try:
                 question = None
-                for attempt in range(2):
+                for attempt in range(3):
                     raw = self.ollama.chat(model, messages, options)
-                    question = self._parse_single_question(raw, qnum)
-                    if question:
-                        break
-                    logger.warning(
-                        f"Q{qnum:03d}: パース失敗 (attempt {attempt+1}) — "
-                        f"raw={raw[:200]}"
-                    )
+                    parsed = self._parse_single_question(raw, qnum)
+                    if not parsed:
+                        logger.warning(
+                            f"Q{qnum:03d}: パース失敗 (attempt {attempt+1}) — "
+                            f"raw={raw[:200]}"
+                        )
+                        continue
+                    # Duplicate-body guard: if the question text matches
+                    # one we've already emitted (or one from the existing
+                    # session), skip and retry with the same prompt —
+                    # diversity preamble should nudge the next attempt.
+                    q_text_norm = _normalize_question_text(parsed.get("question", ""))
+                    if q_text_norm and q_text_norm in seen_texts:
+                        logger.info(
+                            f"Q{qnum:03d}: 重複 question body 検出 — retry "
+                            f"(attempt {attempt+1})"
+                        )
+                        continue
+                    question = parsed
+                    if q_text_norm:
+                        seen_texts.add(q_text_norm)
+                    break
 
                 if question:
                     questions.append(question)
@@ -248,7 +294,7 @@ class QuizService:
                 else:
                     yield ("question_error", {
                         "qnum": qnum,
-                        "error": "問題のパースに失敗しました（2回リトライ済み）",
+                        "error": "問題のパースに失敗しました、または重複を解消できませんでした（3回リトライ済み）",
                     })
 
             except Exception as e:
@@ -292,6 +338,7 @@ class QuizService:
         exclude_topics: list[str] | None = None,
         qnum: int = 1,
         source_info_override: dict | None = None,
+        exclude_question_texts: list[str] | None = None,
     ) -> dict | None:
         """Generate exactly one question. Returns the question dict, or
         None if both attempts fail to parse.
@@ -335,15 +382,28 @@ class QuizService:
             {"role": "user",   "content": user_prompt},
         ]
 
-        for attempt in range(2):
+        seen_texts: set[str] = {
+            _normalize_question_text(t) for t in (exclude_question_texts or []) if t
+        }
+        seen_texts.discard("")
+
+        for attempt in range(3):
             raw = self.ollama.chat(model, messages, options)
-            question = self._parse_single_question(raw, qnum)
-            if question:
-                return question
-            logger.warning(
-                f"regenerate_single Q{qnum:03d}: パース失敗 (attempt {attempt+1}) — "
-                f"raw={raw[:200]}"
-            )
+            parsed = self._parse_single_question(raw, qnum)
+            if not parsed:
+                logger.warning(
+                    f"regenerate_single Q{qnum:03d}: パース失敗 (attempt {attempt+1}) — "
+                    f"raw={raw[:200]}"
+                )
+                continue
+            norm = _normalize_question_text(parsed.get("question", ""))
+            if norm and norm in seen_texts:
+                logger.info(
+                    f"regenerate_single Q{qnum:03d}: 重複検出 — retry "
+                    f"(attempt {attempt+1})"
+                )
+                continue
+            return parsed
         return None
 
     # ------------------------------------------------------------------
