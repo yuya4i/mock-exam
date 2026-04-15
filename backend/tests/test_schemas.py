@@ -64,6 +64,35 @@ def test_quiz_defaults():
     assert req.difficulty == "medium"
     assert req.levels == ["K2", "K3", "K4"]
     assert req.ollama_options == {}
+    assert req.append_to_session_id is None
+
+
+def test_quiz_append_to_session_accepts_string():
+    req = QuizGenerateRequest.model_validate({
+        "source": "x", "model": "qwen2.5",
+        "append_to_session_id": "sess-abc-123",
+    })
+    assert req.append_to_session_id == "sess-abc-123"
+
+
+def test_quiz_append_to_session_blank_becomes_none():
+    """The frontend may send "" when no append target is selected;
+    treat empty string as "no append" for ergonomic reasons."""
+    req = QuizGenerateRequest.model_validate({
+        "source": "x", "model": "qwen2.5",
+        "append_to_session_id": "",
+    })
+    assert req.append_to_session_id is None
+
+
+def test_quiz_append_to_session_max_len():
+    """Bounded so an attacker can't shove an unbounded blob into the
+    SQL parameter."""
+    with pytest.raises(ValidationError):
+        QuizGenerateRequest.model_validate({
+            "source": "x", "model": "qwen2.5",
+            "append_to_session_id": "x" * 65,
+        })
 
 
 @pytest.mark.parametrize(

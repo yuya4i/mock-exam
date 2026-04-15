@@ -141,17 +141,28 @@ class QuizService:
         depth: int = 1,
         doc_types: list[str] | None = None,
         ollama_options: dict | None = None,
+        session_id: str | None = None,
+        existing_topics: list[str] | None = None,
     ):
         """
         スクレイピング→1問ずつ生成のジェネレータ。
         各yieldは (event_type, data_dict) のタプル。
+
+        Append mode (引数 ``session_id`` + ``existing_topics`` で起動):
+            - session_id を使い回す (新しい uuid を発行しない)。
+            - existing_topics を「既出テーマ」として diversity prompt の
+              シードに混ぜ、新しく生成する問題が既存問題と被らないよう
+              にする。
+            - done イベントで返す ``questions`` は **新規分のみ**。マージは
+              呼び出し側 (route handler) が行う。
         """
         if levels is None:
             levels = ["K2", "K3", "K4"]
         if doc_types is None:
             doc_types = ["table", "csv", "pdf", "png"]
 
-        session_id = str(uuid.uuid4())
+        if session_id is None:
+            session_id = str(uuid.uuid4())
 
         # ── Step 1: コンテンツ取得 ──
         source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
@@ -168,7 +179,8 @@ class QuizService:
         })
 
         # ── Step 2: 1問ずつ生成 ──
-        generated_topics: list[str] = []
+        # Seed diversity prompt with existing topics if append mode.
+        generated_topics: list[str] = list(existing_topics) if existing_topics else []
         questions: list[dict] = []
 
         # レベルを問題数に応じてラウンドロビンで割り当て
