@@ -164,7 +164,48 @@ The SPA exposes a 生成を中止 button while in-flight — that aborts the
 fetch via `AbortController` and the backend stops the SSE generator
 on the next yield boundary.
 
-### 4.6 Disk usage growing on `/app/.cache`
+### 4.6 `Failed to resolve import "<pkg>"` after pulling new code
+
+Symptom: Vite overlay in the browser:
+```
+[plugin:vite:import-analysis] Failed to resolve import "mermaid" from
+"src/components/QuestionCard.vue". Does the file exist?
+```
+or backend log: `ModuleNotFoundError: No module named '<pkg>'`.
+
+Cause: `docker-compose.dev.yml` mounts named volumes
+(`frontend-node-modules`, `backend-packages`) over `/app/node_modules`
+and `/usr/local/lib/python3.11/site-packages`. Those volumes survive
+container recreation, so a `package.json` / `requirements.txt` update
+in the *image* doesn't reach what the *container* actually sees.
+
+Fix (no downtime, ~30s):
+
+```bash
+# Frontend:
+docker exec quiz-frontend npm install
+# Backend:
+docker exec quiz-backend pip install -r requirements.txt
+```
+
+Then reload the browser tab — Vite's HMR re-resolves on the next
+request and the overlay dismisses itself. Flask reloads automatically.
+
+Alternative (heavier; rebuilds the volume from scratch — slow):
+
+```bash
+docker compose -f docker-compose.dev.yml down -v   # the -v wipes volumes
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+`docker compose watch` (Docker Compose 2.22+) is set up to do the right
+thing automatically when `package.json` / `requirements.txt` change —
+the `develop.watch` blocks in `docker-compose.dev.yml` mark them as
+`rebuild` triggers. If you run the dev stack with
+`docker compose -f docker-compose.dev.yml watch` (instead of `up -d`),
+this scenario does not occur in the first place.
+
+### 4.7 Disk usage growing on `/app/.cache`
 
 ```bash
 # Sizes by table:
