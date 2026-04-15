@@ -1,5 +1,14 @@
 <template>
-  <div class="question-card card" :class="{ 'revealed': revealed }">
+  <div
+    class="question-card card"
+    :class="{ 'revealed': revealed, 'is-regenerating': regenerating }"
+  >
+    <!-- 自動差し替え中バナー (Mermaid SyntaxError 検知時) -->
+    <div v-if="regenerating" class="regen-banner" role="status" aria-live="polite">
+      <span class="spinner" style="width:12px;height:12px"></span>
+      <span>図のSyntaxエラーを検知。問題を差し替え中…</span>
+    </div>
+
     <!-- ヘッダー -->
     <div class="q-header">
       <span class="q-number">Q{{ index + 1 }}</span>
@@ -75,11 +84,14 @@
 import { computed, ref, onMounted, watch, nextTick } from 'vue'
 
 const props = defineProps({
-  question:   { type: Object,  required: true },
-  index:      { type: Number,  required: true },
-  userAnswer: { type: String,  default: null  },
-  revealed:   { type: Boolean, default: false },
-  sourceInfo: { type: Object,  default: null  },
+  question:    { type: Object,  required: true },
+  index:       { type: Number,  required: true },
+  userAnswer:  { type: String,  default: null  },
+  revealed:    { type: Boolean, default: false },
+  sourceInfo:  { type: Object,  default: null  },
+  // GeneratePage が「Mermaid syntax error → 単問差し替え中」と判断
+  // した時に true。カード上部にバナーを出して進行中であることを示す。
+  regenerating:{ type: Boolean, default: false },
 })
 
 // source_hint のテキストから該当ページURLを検索し、一致しなければソースURLへフォールバック
@@ -105,10 +117,15 @@ const sourceLink = computed(() => {
   return ''
 })
 
-defineEmits(['answer', 'reveal'])
+const emit = defineEmits(['answer', 'reveal', 'diagram-error'])
 
 const diagramEl = ref(null)
 const diagramSvg = ref('')
+
+// Track whether we already asked the parent to regenerate this card.
+// Without this guard a flapping diagram could spam the regenerate
+// endpoint on every re-render.
+let _regenerateRequested = false
 
 async function renderDiagram() {
   if (!props.question.diagram || !diagramEl.value) return
@@ -209,10 +226,25 @@ async function renderDiagram() {
   } catch (e) {
     console.warn('Mermaid rendering failed:', e)
     diagramSvg.value = ''
+    // 図のレンダリング失敗 = LLM の Mermaid 出力に Syntax Error。
+    // 親 (GeneratePage) に通知して、問題ごと差し替え依頼させる。
+    // 1問につき 1 回だけ依頼する (差し替え後の question_id 変化で
+    // watch がフラグを再リセット)。
+    if (!_regenerateRequested) {
+      _regenerateRequested = true
+      emit('diagram-error', {
+        questionId: props.question.id,
+        topic: props.question.topic,
+        level: props.question.level,
+        error: String(e?.message || e),
+      })
+    }
   }
 }
 
 onMounted(() => { if (props.question.diagram) renderDiagram() })
+// id が変わったら差し替え後の問題なのでフラグをリセット。
+watch(() => props.question.id, () => { _regenerateRequested = false })
 watch(() => props.question.diagram, () => nextTick(renderDiagram))
 
 const isCorrect = computed(
@@ -230,8 +262,31 @@ function choiceClass(key) {
 </script>
 
 <style scoped>
-.question-card { transition: border-color 0.3s; }
+.question-card {
+  transition: border-color 0.3s, box-shadow 0.3s, transform 0.15s;
+}
+.question-card:hover {
+  border-color: rgba(99,102,241,0.25);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+}
 .question-card.revealed { border-color: rgba(99,102,241,0.3); }
+.question-card.is-regenerating {
+  border-color: rgba(245,158,11,0.45);
+  box-shadow: 0 0 0 1px rgba(245,158,11,0.18) inset;
+}
+
+.regen-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px -4px 12px;
+  padding: 8px 12px;
+  background: rgba(245,158,11,0.10);
+  border: 1px solid rgba(245,158,11,0.30);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--warning);
+}
 
 .q-header {
   display: flex;

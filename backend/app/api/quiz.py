@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 from app.services.quiz_service import QuizService
 from app.api._schemas import (
     QuizGenerateRequest,
+    RegenerateQuestionRequest,
     ValidationError,
     humanize_first_error,
 )
@@ -244,3 +245,111 @@ def generate_quiz():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ------------------------------------------------------------------
+# 1問だけ差し替え（Mermaid SyntaxError 等の自動リカバリ用）
+# ------------------------------------------------------------------
+@quiz_bp.post("/quiz/regenerate-question")
+def regenerate_question():
+    """Generate a single replacement question.
+
+    The frontend calls this when a question's diagram fails to render
+    (Mermaid SyntaxError). The new question avoids ``exclude_topics``
+    so it explores a different theme. If ``session_id`` and
+    ``question_id`` are both provided, the matching question in the
+    SQLite session is replaced in-place — so reloading the session
+    later won't resurrect the broken one.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        req = RegenerateQuestionRequest.model_validate(body)
+    except ValidationError as e:
+        return jsonify({"error": humanize_first_error(e)}), 400
+
+    try:
+        question = _quiz_service.generate_single_question(
+            source=req.source,
+            model=req.model,
+            level=req.level,
+            difficulty=req.difficulty,
+            depth=req.depth,
+            doc_types=req.doc_types,
+            ollama_options=req.ollama_options,
+            exclude_topics=req.exclude_topics,
+        )
+    except ConnectionError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        logger.error(f"問題再生成エラー: {e}", exc_info=True)
+        return jsonify({"error": f"問題再生成エラー: {e}"}), 500
+
+    if question is None:
+        return jsonify({"error": "問題の生成に失敗しました（2回リトライ済み）"}), 500
+
+    # Optional: persist the replacement in the existing SQLite session.
+    persisted = False
+    if req.session_id and req.question_id:
+        persisted = _replace_question_in_session(
+            session_id=req.session_id,
+            old_question_id=req.question_id,
+            new_question=question,
+        )
+
+    return jsonify({"question": question, "persisted": persisted}), 200
+
+
+def _replace_question_in_session(
+    session_id: str, old_question_id: str, new_question: dict,
+) -> bool:
+    """Find the question with ``old_question_id`` inside the saved
+    session and overwrite it with ``new_question`` (preserving its
+    position so the user's index expectations don't shift).
+
+    The new question's ``id`` is forced to match ``old_question_id``
+    so the user's existing answer (if any) stays referentially valid.
+    """
+    try:
+        from app.database import get_connection
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT questions FROM quiz_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            conn.close()
+            return False
+
+        try:
+            questions = json.loads(row["questions"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            conn.close()
+            return False
+        if not isinstance(questions, list):
+            conn.close()
+            return False
+
+        # Stable ID makes the answer columns and revealed-state map
+        # carry over without renumbering.
+        new_question = {**new_question, "id": old_question_id}
+
+        replaced = False
+        for i, q in enumerate(questions):
+            if isinstance(q, dict) and q.get("id") == old_question_id:
+                questions[i] = new_question
+                replaced = True
+                break
+        if not replaced:
+            conn.close()
+            return False
+
+        conn.execute(
+            "UPDATE quiz_sessions SET questions = ? WHERE session_id = ?",
+            (json.dumps(questions, ensure_ascii=False), session_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.warning(f"問題差し替えのDB更新エラー: {e}")
+        return False

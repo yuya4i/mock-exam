@@ -268,6 +268,70 @@ class QuizService:
         })
 
     # ------------------------------------------------------------------
+    # 1問だけ生成（差し替え用 — Mermaid SyntaxError 等で使う）
+    # ------------------------------------------------------------------
+    def generate_single_question(
+        self,
+        source: str,
+        model: str,
+        level: str = "K2",
+        difficulty: str = "medium",
+        depth: int = 1,
+        doc_types: list[str] | None = None,
+        ollama_options: dict | None = None,
+        exclude_topics: list[str] | None = None,
+        qnum: int = 1,
+    ) -> dict | None:
+        """Generate exactly one question. Returns the question dict, or
+        None if both attempts fail to parse.
+
+        ``exclude_topics`` are forwarded to the diversity prompt so the
+        new question explores a different theme — including the topic
+        of the question being replaced. Caller is responsible for
+        composing that list (existing topics + failing topic).
+
+        This intentionally re-uses the same content fetch path as
+        ``generate_incremental`` so source caching (TTLCache, 1 hour)
+        kicks in and the regen call is essentially free network-wise.
+        """
+        if doc_types is None:
+            doc_types = ["table", "csv", "pdf", "png"]
+
+        source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
+
+        options = {"temperature": 0.7, "num_predict": 1024}
+        if ollama_options:
+            options.update(ollama_options)
+
+        user_prompt = SINGLE_Q_TEMPLATE.format(
+            qnum=qnum,
+            level=level,
+            difficulty=difficulty,
+            previous_topics_block=_build_previous_topics_block(exclude_topics or []),
+            title=source_info["title"],
+            source=source_info["source"],
+            page_count=source_info.get("page_count", 1),
+            doc_types=" / ".join(source_info.get("doc_types", doc_types)),
+            content=source_info["content"],
+        )
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": user_prompt},
+        ]
+
+        for attempt in range(2):
+            raw = self.ollama.chat(model, messages, options)
+            question = self._parse_single_question(raw, qnum)
+            if question:
+                return question
+            logger.warning(
+                f"regenerate_single Q{qnum:03d}: パース失敗 (attempt {attempt+1}) — "
+                f"raw={raw[:200]}"
+            )
+        return None
+
+    # ------------------------------------------------------------------
     # 一括生成（後方互換）
     # ------------------------------------------------------------------
     def generate(self, **kwargs) -> dict:

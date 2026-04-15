@@ -50,28 +50,43 @@ onMounted(() => {
 
 <style>
 :root {
-  --bg-primary:   #0f172a;
-  --bg-secondary: #1e293b;
-  --bg-card:      #1e293b;
-  --border:       #334155;
+  --bg-primary:   #0b1220;
+  --bg-secondary: #131c2e;
+  --bg-card:      #1a2438;
+  --bg-card-hover:#1f2a42;
+  --border:       #2c3a55;
+  --border-strong:#3b4d70;
   --text-primary: #f1f5f9;
   --text-muted:   #94a3b8;
+  --text-faint:   #64748b;
   --accent:       #6366f1;
   --accent-hover: #818cf8;
+  --accent-glow:  rgba(99,102,241,0.35);
   --success:      #22c55e;
   --danger:       #ef4444;
   --warning:      #f59e0b;
   --radius:       12px;
+  --radius-sm:    8px;
+  --shadow-sm:    0 1px 3px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.10);
+  --shadow-md:    0 4px 16px rgba(0,0,0,0.22), 0 2px 6px rgba(0,0,0,0.12);
+  --shadow-lg:    0 12px 36px rgba(0,0,0,0.28), 0 4px 12px rgba(0,0,0,0.16);
+  --transition:   180ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  background: var(--bg-primary);
+  background:
+    radial-gradient(circle at 20% 0%, rgba(99,102,241,0.10), transparent 50%),
+    radial-gradient(circle at 80% 100%, rgba(34,197,94,0.06), transparent 50%),
+    var(--bg-primary);
+  background-attachment: fixed;
   color: var(--text-primary);
-  font-family: 'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif;
+  font-family: 'Inter', 'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif;
   font-size: 14px;
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .app { min-height: 100vh; display: flex; flex-direction: column; }
@@ -83,11 +98,14 @@ body {
   gap: 24px;
   padding: 0 24px;
   height: 60px;
-  background: var(--bg-secondary);
+  background: rgba(19, 28, 46, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 100;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.20);
 }
 
 .navbar-brand {
@@ -182,29 +200,64 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+.card:hover {
+  box-shadow: var(--shadow-md);
 }
 
 /* ボタン */
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 8px 18px;
-  border-radius: 8px;
-  border: none;
+  padding: 9px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
-  transition: all 0.2s;
+  letter-spacing: 0.01em;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), transform 80ms ease;
+  user-select: none;
 }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary  { background: var(--accent); color: #fff; }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-secondary { background: var(--border); color: var(--text-primary); }
-.btn-secondary:hover:not(:disabled) { background: #475569; }
-.btn-danger   { background: var(--danger); color: #fff; }
-.btn-danger:hover:not(:disabled) { background: #dc2626; }
-.btn-success  { background: var(--success); color: #fff; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent) 0%, #5256e8 100%);
+  color: #fff;
+  border-color: rgba(255,255,255,0.06);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset, 0 4px 14px rgba(99,102,241,0.30);
+}
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--accent-hover) 0%, #6c70f0 100%);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.14) inset, 0 6px 20px rgba(99,102,241,0.40);
+}
+.btn-secondary {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: #2a3858;
+  border-color: var(--accent);
+}
+.btn-danger {
+  background: linear-gradient(135deg, var(--danger) 0%, #d83a3a 100%);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(239,68,68,0.30);
+}
+.btn-danger:hover:not(:disabled) {
+  background: linear-gradient(135deg, #f06464 0%, #dc2626 100%);
+}
+.btn-success { background: var(--success); color: #fff; }
 
 /* フォーム */
 .form-group { display: flex; flex-direction: column; gap: 6px; }
@@ -212,16 +265,19 @@ body {
 .form-input, .form-select, .form-textarea {
   background: var(--bg-primary);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   color: var(--text-primary);
-  padding: 8px 12px;
+  padding: 9px 12px;
   font-size: 13px;
   width: 100%;
-  transition: border-color 0.2s;
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
 }
+.form-input::placeholder, .form-textarea::placeholder { color: var(--text-faint); }
+.form-input:hover, .form-select:hover, .form-textarea:hover { border-color: var(--border-strong); }
 .form-input:focus, .form-select:focus, .form-textarea:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .form-textarea { resize: vertical; min-height: 80px; }
 
@@ -261,7 +317,21 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* スクロールバー */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--bg-primary); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+* { scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+
+/* グローバルセレクション色 */
+::selection { background: rgba(99,102,241,0.40); color: #fff; }
 </style>
