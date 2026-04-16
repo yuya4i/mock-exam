@@ -7,6 +7,10 @@ pydantic==2.7.4
 python-dotenv==1.0.1
 cachetools==5.3.3
 pypdf==6.10.1
-camoufox[geoip]
+# camoufox は別環境ビルド時の version drift で
+# 「manifest.json is missing」を出した実績があるので明示ピン。
+# 上げる時は Dockerfile の `python -m camoufox fetch` 後の addon
+# 検証ステップで同時にスモークすること。
+camoufox[geoip]==0.4.11
 # 開発用: Flaskリロードの高速化・WSL2バインドマウント対応
 watchdog==4.0.2

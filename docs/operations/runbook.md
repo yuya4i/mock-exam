@@ -230,7 +230,43 @@ docker run --rm -v quiz-app_quiz-cache:/data alpine \
 docker compose up -d backend
 ```
 
-### 4.8 Disk usage growing on `/app/.cache`
+### 4.8 `manifest.json is missing. Addon path must be a path to an extracted addon.`
+
+Symptom: a fresh-machine build of the backend image succeeds, but the
+container errors out the moment a scrape is requested:
+```
+manifest.json is missing. Addon path must be a path to an extracted addon.
+```
+
+Root cause: `python -m camoufox fetch` downloaded the Firefox binary
+but the **UBO addon extraction** failed silently (network blip, slow
+mirror, etc.). camoufox's `maybe_download_addons()` then sees the
+empty `addons/UBO/` directory next time and assumes "already
+downloaded" — the missing `manifest.json` only surfaces when the
+browser actually tries to load the extension.
+
+Now caught at build time: both `Dockerfile` and `Dockerfile.dev` run a
+verification + one retry after `python -m camoufox fetch`. If the UBO
+addon is still missing after the retry the build fails fast with a
+clear message.
+
+If you're on an older image and hit this in production:
+
+```bash
+# Inside the running container — wipe the broken addon dir and re-fetch.
+docker exec quiz-backend rm -rf /home/appuser/.cache/camoufox/addons/UBO
+docker exec quiz-backend python -m camoufox fetch
+docker exec quiz-backend ls -la /home/appuser/.cache/camoufox/addons/UBO/manifest.json
+```
+
+(For dev-mode containers the path is `/root/.cache/camoufox/addons/UBO`.)
+
+If you're rebuilding from source on a different machine, just pull
+the latest commit — `requirements.txt` now pins
+`camoufox[geoip]==0.4.11` and the Dockerfile fetch step has the
+self-verifying retry built in.
+
+### 4.9 Disk usage growing on `/app/.cache`
 
 ```bash
 # Sizes by table:
