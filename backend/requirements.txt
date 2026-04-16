@@ -9,8 +9,18 @@ cachetools==5.3.3
 pypdf==6.10.1
 # camoufox は別環境ビルド時の version drift で
 # 「manifest.json is missing」を出した実績があるので明示ピン。
-# 上げる時は Dockerfile の `python -m camoufox fetch` 後の addon
-# 検証ステップで同時にスモークすること。
+#
+# Upgrade policy: upstream-driven (個人運用 + hard pin と整合)。
+#   - 自動 PR (Dependabot 等) は付けない。
+#   - 上げる契機は次のいずれか:
+#       (a) 実害のある bug に当たった
+#       (b) pip-audit が CVE を新たにフラグした
+#       (c) ヘッドレス Firefox / Playwright API が破壊的に変わった
+#   - 上げる時は必ず:
+#       1. CHANGELOG / release notes を読み、addon 仕様変更が無いか確認
+#       2. Dockerfile の `python -m camoufox fetch` 後の検証ステップで
+#          UBO addon manifest が出来ることをローカルでスモーク
+#       3. 動作確認後に PR (CI が pytest + e2e で gate)
 camoufox[geoip]==0.4.11
 # 開発用: Flaskリロードの高速化・WSL2バインドマウント対応
 watchdog==4.0.2
