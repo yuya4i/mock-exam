@@ -205,7 +205,32 @@ the `develop.watch` blocks in `docker-compose.dev.yml` mark them as
 `docker compose -f docker-compose.dev.yml watch` (instead of `up -d`),
 this scenario does not occur in the first place.
 
-### 4.7 Disk usage growing on `/app/.cache`
+### 4.7 `attempt to write a readonly database` after switching to non-root container
+
+Symptom: backend in restart loop with
+```
+sqlite3.OperationalError: attempt to write a readonly database
+```
+right after pulling a build that flipped `Dockerfile` to non-root
+(`USER appuser`). The persisted `quiz-cache` volume still has files
+owned by `root` from when previous containers ran as root, so the new
+UID 1000 process can't write.
+
+**Now self-healing**: the production image runs `docker-entrypoint.sh`
+as root, idempotently chowns `/app/.cache` to `appuser`, then `exec
+gosu appuser` swaps to the unprivileged process. New deployments and
+existing volumes both work without operator intervention.
+
+If you're on an older image without the entrypoint, a one-shot manual
+fix:
+```bash
+docker compose stop backend
+docker run --rm -v quiz-app_quiz-cache:/data alpine \
+    chown -R 1000:1000 /data
+docker compose up -d backend
+```
+
+### 4.8 Disk usage growing on `/app/.cache`
 
 ```bash
 # Sizes by table:
