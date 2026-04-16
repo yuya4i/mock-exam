@@ -20,11 +20,13 @@ ARG APP_UID=1000
 ARG APP_GID=1000
 
 # ---- システム依存パッケージ (as root) ----
-# camoufox（Firefox）の実行に必要なライブラリ群
+# camoufox（Firefox）の実行に必要なライブラリ群 + 非root切替用 gosu
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     ca-certificates \
+    # 起動時の権限降格 (entrypoint 経由)
+    gosu \
     # Firefox実行に必要なライブラリ
     libgtk-3-0 \
     libdbus-glib-1-2 \
@@ -66,20 +68,28 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- camoufox browser download (as appuser so files land in /home/appuser) ----
-# Running as appuser here also surfaces permission misconfig early.
+# camoufox fetch also writes GeoLite2-City.mmdb into site-packages/camoufox/,
+# so we grant appuser ownership of that directory before switching user.
+RUN chown -R appuser:appuser /usr/local/lib/python3.11/site-packages/camoufox/
 USER appuser
 RUN python -m camoufox fetch
 
 # ---- App code + ownership ----
 USER root
 COPY . /app
-# Pre-create the cache dir so the named volume 'quiz-cache' inherits the
-# right owner on first mount. Without this, Docker creates /app/.cache as
-# root and the non-root app can't write history.json / quizgen.db.
+# Pre-create the cache dir so a fresh named volume 'quiz-cache' inherits
+# appuser ownership on first mount. (Old volumes that pre-date the
+# non-root switch are healed at runtime by docker-entrypoint.sh.)
 RUN mkdir -p /app/.cache && \
     chown -R appuser:appuser /app
 
-USER appuser
+# Entrypoint: runs as root just long enough to chown an existing
+# /app/.cache (idempotent), then `exec gosu appuser` replaces the shell
+# with the CMD. NO `USER appuser` directive on purpose — entrypoint
+# does the descent so it can fix ownership first.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 EXPOSE 4321
 
