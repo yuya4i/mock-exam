@@ -72,7 +72,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 # so we grant appuser ownership of that directory before switching user.
 RUN chown -R appuser:appuser /usr/local/lib/python3.11/site-packages/camoufox/
 USER appuser
-RUN python -m camoufox fetch
+# fetch + 検証。camoufox は addon 解凍に失敗しても fetch 自体は成功扱い
+# になり、後で実行時に "manifest.json is missing" が出る。Once-bitten。
+# 検証で 1 つでも欠けてたらビルドを fail させて気付くようにする。
+# (空ディレクトリだけ残ると次回以降 "downloaded" と誤認されてスキップ
+# される罠があるので、欠けてたら一度消してから再 fetch する。)
+RUN set -e; \
+    python -m camoufox fetch; \
+    if [ ! -f "$HOME/.cache/camoufox/addons/UBO/manifest.json" ]; then \
+      echo "[fetch verify] UBO addon incomplete — clearing and retrying"; \
+      rm -rf "$HOME/.cache/camoufox/addons/UBO"; \
+      python -m camoufox fetch; \
+    fi; \
+    test -f "$HOME/.cache/camoufox/addons/UBO/manifest.json" \
+      || (echo "[fetch verify] FATAL: UBO addon still missing after retry" \
+          && find "$HOME/.cache/camoufox" -maxdepth 3 \
+          && exit 1)
 
 # ---- App code + ownership ----
 USER root

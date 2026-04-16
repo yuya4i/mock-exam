@@ -41,8 +41,21 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- camoufoxブラウザバイナリのダウンロード ----
-# Dockerビルド時に一度だけ実行（イメージに含める）
-RUN python -m camoufox fetch
+# Dockerビルド時に一度だけ実行（イメージに含める）。
+# fetch 完了後に UBO addon が manifest.json 付きで展開されているか
+# 確認し、欠けていたら 1 回だけ再 fetch (空 dir を消して既ダウンロード
+# 誤認をリセットしてから) する。詳細は Dockerfile (prod) のコメント参照。
+RUN set -e; \
+    python -m camoufox fetch; \
+    if [ ! -f /root/.cache/camoufox/addons/UBO/manifest.json ]; then \
+      echo "[fetch verify] UBO addon incomplete — clearing and retrying"; \
+      rm -rf /root/.cache/camoufox/addons/UBO; \
+      python -m camoufox fetch; \
+    fi; \
+    test -f /root/.cache/camoufox/addons/UBO/manifest.json \
+      || (echo "[fetch verify] FATAL: UBO addon still missing after retry" \
+          && find /root/.cache/camoufox -maxdepth 3 \
+          && exit 1)
 
 # アプリケーションコードはボリュームマウントで提供されるため COPY しない
 
