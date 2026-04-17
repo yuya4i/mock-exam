@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api, { API_TOKEN_STORAGE_KEY } from '@/composables/useApi'
+import api, { API_TOKEN_STORAGE_KEY, API_TOKEN_CLEARED_EVENT } from '@/composables/useApi'
 import { streamSSE } from '@/composables/useSSE'
 
 // ======================================================================
@@ -29,6 +29,15 @@ export const useSettingsStore = defineStore('settings', () => {
     } else {
       localStorage.removeItem(API_TOKEN_STORAGE_KEY)
     }
+  }
+
+  // FRONTEND-5: when useApi / useSSE drop a bad token after a 401,
+  // they fire api-token-cleared on window. Mirror that into our ref
+  // so the settings input doesn't keep showing the now-removed token.
+  if (typeof window !== 'undefined') {
+    window.addEventListener(API_TOKEN_CLEARED_EVENT, () => {
+      apiToken.value = ''
+    })
   }
 
   return { ollamaUrl, apiToken, setOllamaUrl, setApiToken }

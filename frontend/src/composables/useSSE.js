@@ -17,7 +17,7 @@
  * Single shared helper, used by both useQuizStore (POST /api/quiz/generate)
  * and useScrapeProgressStore (GET /api/content/scrape-stream).
  */
-import { API_TOKEN_STORAGE_KEY } from '@/composables/useApi'
+import { API_TOKEN_STORAGE_KEY, API_TOKEN_CLEARED_EVENT } from '@/composables/useApi'
 
 /**
  * Open an SSE stream and dispatch each named event to ``onEvent``.
@@ -62,7 +62,18 @@ export async function streamSSE(url, init = {}, onEvent, signal) {
     try { errBody = await response.json() } catch (_) {}
     const status = response.status
     if (status === 401) {
-      throw new Error('認証に失敗しました。設定画面で API_TOKEN を確認してください。')
+      // FRONTEND-5: drop the bad token so we don't loop on it, and
+      // notify the Pinia settings store so the UI input clears.
+      try { localStorage.removeItem(API_TOKEN_STORAGE_KEY) } catch (_) {}
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(API_TOKEN_CLEARED_EVENT))
+        }
+      } catch (_) {}
+      throw new Error(
+        '認証に失敗しました。保存していたトークンを破棄しました。' +
+        '設定画面から API_TOKEN を再設定してください。',
+      )
     }
     throw new Error(errBody.error || `HTTP ${status}`)
   }
