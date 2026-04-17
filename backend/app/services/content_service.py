@@ -751,6 +751,15 @@ class ContentService:
         """
         スクレイピング結果をdocumentsテーブルに保存する。
         重複（content_hash一致）の場合は既存IDを返す。
+
+        Concurrency: 並行スクレイプで同一 content_hash を 2 つの request
+        がそれぞれ "存在しない" と判定 → 両方が INSERT を試みると 2 つ目
+        が UNIQUE 制約違反になり、以前の実装は例外を握り潰して None を
+        返していた (BACKEND-4)。結果、2 つ目の caller は document_id を
+        受け取れず、append regen 時の cached content reuse もできなくなる。
+
+        ``INSERT OR IGNORE`` + SELECT-after に統一して、conflict 時も
+        既存行の id を返す。
         """
         import json as _json
         from datetime import datetime, timezone
@@ -775,28 +784,33 @@ class ContentService:
 
         try:
             conn = get_connection()
-            # 既存チェック
-            existing = conn.execute(
-                "SELECT id FROM documents WHERE content_hash = ?", (content_hash,)
-            ).fetchone()
-            if existing:
+            try:
+                scraped_at = datetime.now(timezone.utc).isoformat()
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO documents
+                       (title, url, content, source_type, page_count,
+                        doc_types, scraped_at, content_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (title,
+                     url if url != "plain_text" else None,
+                     content, source_type, page_count,
+                     _json.dumps(doc_types, ensure_ascii=False),
+                     scraped_at, content_hash),
+                )
+                if cursor.rowcount == 1:
+                    doc_id = cursor.lastrowid
+                    logger.info(f"ドキュメントをDBに保存しました (id={doc_id})")
+                else:
+                    # IGNORE'd because content_hash already exists.
+                    row = conn.execute(
+                        "SELECT id FROM documents WHERE content_hash = ?",
+                        (content_hash,),
+                    ).fetchone()
+                    doc_id = row["id"] if row else None
+                conn.commit()
+                return doc_id
+            finally:
                 conn.close()
-                return existing["id"]
-
-            scraped_at = datetime.now(timezone.utc).isoformat()
-            cursor = conn.execute(
-                """INSERT INTO documents
-                   (title, url, content, source_type, page_count, doc_types, scraped_at, content_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (title, url if url != "plain_text" else None, content, source_type,
-                 page_count, _json.dumps(doc_types, ensure_ascii=False),
-                 scraped_at, content_hash),
-            )
-            conn.commit()
-            doc_id = cursor.lastrowid
-            conn.close()
-            logger.info(f"ドキュメントをDBに保存しました (id={doc_id})")
-            return doc_id
         except Exception as e:
             logger.warning(f"ドキュメントDB保存エラー: {e}")
             return None
