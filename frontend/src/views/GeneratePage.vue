@@ -604,6 +604,16 @@ const loadingSelectedDoc = ref(false)
 // 自動再生成中の問題ID集合（重複呼び出し防止 + UI表示）
 const regeneratingQuestionIds = ref([])
 
+// FRONTEND-6: per-question retry counter for the auto-regen path.
+// Without a cap, an LLM that keeps emitting un-renderable Mermaid for
+// the same topic would trigger renderDiagram → diagram-error → regen
+// → renderDiagram → ... in an unbounded loop, burning Ollama cycles
+// (and on a remote model, money). After MAX_REGEN_RETRIES we leave
+// the bad diagram in place; QuestionCard already hides the broken
+// SVG and the rest of the question stays answerable.
+const MAX_REGEN_RETRIES = 2
+const regenRetryCount = ref({})  // { [questionId]: number }
+
 // セッションをロードした時に「保存時のモデルが現在インストールされていない」旨を
 // 知らせるための警告メッセージ。Setting to null clears the alert.
 // shape: { missing: string, installed: string[] } | null
@@ -836,6 +846,13 @@ watch(() => quizStore.progress.status, (val) => {
 })
 watch(() => quizStore.generating, (val) => {
   if (!val && quizStore.result) currentStep.value = 3
+})
+
+// FRONTEND-6: clear the regen retry counter whenever a fresh session
+// shows up (new generate, load saved, append). Without this reset
+// every previously-failed Q-id stays "exhausted" forever in this tab.
+watch(() => quizStore.result?.session_id, () => {
+  regenRetryCount.value = {}
 })
 
 // ---- モデル容量チェック ----
@@ -1127,6 +1144,20 @@ async function onDiagramError(payload) {
   if (regeneratingQuestionIds.value.includes(failedId)) return
   if (!quizStore.result?.questions) return
   if (!params.value.model) return  // モデルなしでは差し替え不能
+
+  // FRONTEND-6: per-question retry cap — give up after a few rounds
+  // so a flapping LLM can't drive an infinite regenerate loop.
+  const prevCount = regenRetryCount.value[failedId] || 0
+  if (prevCount >= MAX_REGEN_RETRIES) {
+    console.warn(
+      `[regen] giving up on ${failedId} after ${prevCount} retries`,
+    )
+    return
+  }
+  regenRetryCount.value = {
+    ...regenRetryCount.value,
+    [failedId]: prevCount + 1,
+  }
 
   // 重複呼び出しガード
   regeneratingQuestionIds.value = [...regeneratingQuestionIds.value, failedId]
