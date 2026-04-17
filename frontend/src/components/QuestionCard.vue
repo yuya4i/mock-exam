@@ -260,9 +260,18 @@ async function renderDiagram() {
 }
 
 onMounted(() => { if (props.question.diagram) renderDiagram() })
-// id が変わったら差し替え後の問題なのでフラグをリセット。
+// FRONTEND-11: reset the regenerate-once guard when *either* the id
+// changes (different question) OR the diagram source changes (the
+// regenerate flow keeps the id but rewrites the source). Without the
+// diagram-change reset, a regenerated question that's *also* broken
+// would be silently skipped by the guard and never trigger another
+// regen — the parent's per-question retry counter then never gets
+// the second signal and the user is left with a broken card.
 watch(() => props.question.id, () => { _regenerateRequested = false })
-watch(() => props.question.diagram, () => nextTick(renderDiagram))
+watch(() => props.question.diagram, () => {
+  _regenerateRequested = false
+  nextTick(renderDiagram)
+})
 
 const isCorrect = computed(
   () => props.userAnswer === props.question.answer
