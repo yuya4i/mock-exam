@@ -132,110 +132,94 @@ const diagramSvg = ref('')
 // endpoint on every re-render.
 let _regenerateRequested = false
 
+// FRONTEND-10: mermaid.initialize() previously ran INSIDE every
+// renderDiagram() call. That config is process-global, so the second
+// (and 100th) call re-flushes the SVG cache and re-installs DOMPurify
+// hooks for no benefit. Initialize once on first use; subsequent
+// renderDiagram() calls just await the same promise.
+let _mermaidPromise = null
+function _getMermaid() {
+  if (!_mermaidPromise) {
+    _mermaidPromise = import('mermaid').then(({ default: m }) => {
+      // base + themeVariables で全図種のテキストコントラストを明示制御。
+      m.initialize({
+        startOnLoad: false,
+        // SEC-2 defense-in-depth: explicit strict mode (DOMPurify-sanitized
+        // SVG, no html labels, no javascript: click handlers).
+        securityLevel: 'strict',
+        flowchart: { htmlLabels: false },
+        theme: 'base',
+        fontFamily: "'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif",
+        themeVariables: {
+          background:           '#0f172a',
+          primaryColor:         '#1e293b',
+          primaryTextColor:     '#f1f5f9',
+          primaryBorderColor:   '#6366f1',
+          secondaryColor:       '#334155',
+          secondaryTextColor:   '#f1f5f9',
+          secondaryBorderColor: '#475569',
+          tertiaryColor:        '#1e293b',
+          tertiaryTextColor:    '#f1f5f9',
+          tertiaryBorderColor:  '#334155',
+          lineColor:            '#94a3b8',
+          textColor:            '#f1f5f9',
+          noteBkgColor:         '#3a2a10',
+          noteTextColor:        '#fbbf24',
+          noteBorderColor:      '#fbbf24',
+          actorBkg:             '#1e293b',
+          actorBorder:          '#6366f1',
+          actorTextColor:       '#f1f5f9',
+          actorLineColor:       '#94a3b8',
+          signalColor:          '#f1f5f9',
+          signalTextColor:      '#f1f5f9',
+          labelBoxBkgColor:     '#1e293b',
+          labelBoxBorderColor:  '#6366f1',
+          labelTextColor:       '#f1f5f9',
+          loopTextColor:        '#f1f5f9',
+          activationBkgColor:   '#334155',
+          activationBorderColor:'#6366f1',
+          sequenceNumberColor:  '#0f172a',
+          sectionBkgColor:      '#1e293b',
+          altSectionBkgColor:   '#0f172a',
+          sectionBkgColor2:     '#334155',
+          taskBkgColor:         '#6366f1',
+          taskTextColor:        '#f1f5f9',
+          taskTextLightColor:   '#f1f5f9',
+          taskTextOutsideColor: '#f1f5f9',
+          taskTextDarkColor:    '#0f172a',
+          gridColor:            '#334155',
+          todayLineColor:       '#ef4444',
+          pie1: '#6366f1', pie2: '#22c55e', pie3: '#fbbf24', pie4: '#ef4444',
+          pie5: '#a855f7', pie6: '#06b6d4', pie7: '#f97316', pie8: '#84cc16',
+          pie9: '#ec4899', pie10:'#14b8a6', pie11:'#eab308', pie12:'#f43f5e',
+          pieTitleTextColor:    '#f1f5f9',
+          pieSectionTextColor:  '#0f172a',
+          pieLegendTextColor:   '#f1f5f9',
+          pieStrokeColor:       '#0f172a',
+          pieOuterStrokeColor:  '#475569',
+          labelColor:           '#f1f5f9',
+          altBackground:        '#0f172a',
+          classText:            '#f1f5f9',
+          fillType0: '#6366f1', fillType1: '#22c55e', fillType2: '#fbbf24',
+          fillType3: '#ef4444', fillType4: '#a855f7', fillType5: '#06b6d4',
+          fillType6: '#f97316', fillType7: '#84cc16',
+          attributeBackgroundColorOdd:  '#1e293b',
+          attributeBackgroundColorEven: '#0f172a',
+        },
+      })
+      return m
+    })
+  }
+  return _mermaidPromise
+}
+
 async function renderDiagram() {
   if (!props.question.diagram) return
   // 再レンダ前は前回の SVG を一旦クリアしておく (失敗時に古い SVG が
   // 残らないように)。
   diagramSvg.value = ''
   try {
-    // Mermaid は 'mermaid' パッケージを npm で解決する（バージョン固定）。
-    // 以前は cdn.jsdelivr.net から動的 import していたが、オフライン動作
-    // 不可・SRI なし・供給チェーン監査困難という P0-9 の指摘に対応して
-    // ローカルインストールへ移行した。バージョンは package.json で固定
-    // しているので、mermaid.render のサニタイズ境界も監査可能になる。
-    const { default: mermaid } = await import('mermaid')
-    // base + themeVariables で全図種のテキストコントラストを明示制御。
-    // 'dark' プリセットは pie / journey / quadrant / sankey / C4 等で
-    // テキストが薄く読みにくくなる既知の問題があるため、自前で配色する。
-    mermaid.initialize({
-      startOnLoad: false,
-      // SEC-2 defense-in-depth. Mermaid v11 already defaults to
-      // 'strict' (DOMPurify-sanitized SVG, no html labels, no
-      // javascript: click handlers) but we make it explicit so a
-      // future config refactor can't silently regress.
-      securityLevel: 'strict',
-      // Disable inline HTML in flowchart node labels. Without this
-      // a node like A["<b>x</b>"] would emit a foreignObject; with
-      // strict securityLevel that is sanitized, but belt+braces.
-      flowchart: { htmlLabels: false },
-      theme: 'base',
-      fontFamily: "'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif",
-      themeVariables: {
-        // 全体カラー
-        background:           '#0f172a',  // --bg-primary
-        primaryColor:         '#1e293b',  // --bg-secondary（ノード塗り）
-        primaryTextColor:     '#f1f5f9',  // --text-primary（ノードテキスト）
-        primaryBorderColor:   '#6366f1',  // --accent
-        secondaryColor:       '#334155',  // --border
-        secondaryTextColor:   '#f1f5f9',
-        secondaryBorderColor: '#475569',
-        tertiaryColor:        '#1e293b',
-        tertiaryTextColor:    '#f1f5f9',
-        tertiaryBorderColor:  '#334155',
-
-        // 線・矢印
-        lineColor:            '#94a3b8',  // --text-muted（矢印・線）
-        textColor:            '#f1f5f9',  // 既定テキスト
-
-        // ノート
-        noteBkgColor:         '#3a2a10',
-        noteTextColor:        '#fbbf24',
-        noteBorderColor:      '#fbbf24',
-
-        // sequenceDiagram
-        actorBkg:             '#1e293b',
-        actorBorder:          '#6366f1',
-        actorTextColor:       '#f1f5f9',
-        actorLineColor:       '#94a3b8',
-        signalColor:          '#f1f5f9',
-        signalTextColor:      '#f1f5f9',
-        labelBoxBkgColor:     '#1e293b',
-        labelBoxBorderColor:  '#6366f1',
-        labelTextColor:       '#f1f5f9',
-        loopTextColor:        '#f1f5f9',
-        activationBkgColor:   '#334155',
-        activationBorderColor:'#6366f1',
-        sequenceNumberColor:  '#0f172a',
-
-        // gantt
-        sectionBkgColor:      '#1e293b',
-        altSectionBkgColor:   '#0f172a',
-        sectionBkgColor2:     '#334155',
-        taskBkgColor:         '#6366f1',
-        taskTextColor:        '#f1f5f9',
-        taskTextLightColor:   '#f1f5f9',
-        taskTextOutsideColor: '#f1f5f9',
-        taskTextDarkColor:    '#0f172a',
-        gridColor:            '#334155',
-        todayLineColor:       '#ef4444',
-
-        // pie
-        pie1: '#6366f1', pie2: '#22c55e', pie3: '#fbbf24', pie4: '#ef4444',
-        pie5: '#a855f7', pie6: '#06b6d4', pie7: '#f97316', pie8: '#84cc16',
-        pie9: '#ec4899', pie10:'#14b8a6', pie11:'#eab308', pie12:'#f43f5e',
-        pieTitleTextColor:    '#f1f5f9',
-        pieSectionTextColor:  '#0f172a',  // 扇内（明色背景）は暗テキスト
-        pieLegendTextColor:   '#f1f5f9',
-        pieStrokeColor:       '#0f172a',
-        pieOuterStrokeColor:  '#475569',
-
-        // state diagram
-        labelColor:           '#f1f5f9',
-        altBackground:        '#0f172a',
-
-        // class diagram
-        classText:            '#f1f5f9',
-
-        // journey / quadrant
-        fillType0: '#6366f1', fillType1: '#22c55e', fillType2: '#fbbf24',
-        fillType3: '#ef4444', fillType4: '#a855f7', fillType5: '#06b6d4',
-        fillType6: '#f97316', fillType7: '#84cc16',
-
-        // ER diagram
-        attributeBackgroundColorOdd:  '#1e293b',
-        attributeBackgroundColorEven: '#0f172a',
-      },
-    })
+    const mermaid = await _getMermaid()
     const id = `mermaid-${props.question.id}`
     const { svg } = await mermaid.render(id, props.question.diagram)
     // mermaid.render はサニタイズ済みSVGを返す
