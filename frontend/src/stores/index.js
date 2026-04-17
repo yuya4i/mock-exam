@@ -23,12 +23,17 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setApiToken(token) {
     const trimmed = (token || '').trim()
-    apiToken.value = trimmed
+    // FRONTEND-12: write to localStorage FIRST so the request
+    // interceptor (which reads localStorage at request time) sees the
+    // new value before any reactivity effects fire other API calls.
+    // Without this order, an effect chained off apiToken.value could
+    // dispatch a request that still reads the stale localStorage.
     if (trimmed) {
       localStorage.setItem(API_TOKEN_STORAGE_KEY, trimmed)
     } else {
       localStorage.removeItem(API_TOKEN_STORAGE_KEY)
     }
+    apiToken.value = trimmed
   }
 
   // FRONTEND-5: when useApi / useSSE drop a bad token after a 401,
