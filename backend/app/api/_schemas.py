@@ -269,10 +269,33 @@ class DocumentCreateRequest(BaseModel):
 # Results
 # --------------------------------------------------------------------------
 class AnswersRequest(BaseModel):
-    """Body for ``POST /api/results/<session_id>/answers``."""
+    """Body for ``POST /api/results/<session_id>/answers``.
+
+    BACKEND-12: cap the dict at 1000 entries (the realistic ceiling
+    is ~200 questions in a single quiz session; 1000 is generous
+    head-room while still bounding worst-case memory use).
+    BACKEND-13: ``score_correct`` / ``score_total`` survive on the
+    wire for backwards compat but the route handler now recomputes
+    them server-side from the persisted questions, so a malicious
+    client can't inflate analytics.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    answers: dict[str, str] = Field(min_length=1)
+    answers: dict[str, str] = Field(min_length=1, max_length=1000)
     score_correct: int = Field(default=0, ge=0, le=1_000_000)
     score_total: int = Field(default=0, ge=0, le=1_000_000)
+
+    @field_validator("answers", mode="after")
+    @classmethod
+    def _check_answer_value_lengths(cls, v: dict[str, str]) -> dict[str, str]:
+        # Each answer is a single choice key (typically "a"/"b"/"c"/"d").
+        # Allow some slack but reject obviously bogus megapayloads.
+        for k, val in v.items():
+            if not isinstance(k, str) or not isinstance(val, str):
+                raise ValueError("answers のキー / 値は文字列で指定してください。")
+            if len(k) > 64:
+                raise ValueError("answers のキーは 64 文字以内で指定してください。")
+            if len(val) > 16:
+                raise ValueError("answers の値は 16 文字以内で指定してください。")
+        return v

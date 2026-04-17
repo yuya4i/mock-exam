@@ -252,17 +252,42 @@ def save_answers(session_id: str):
         return jsonify({"error": humanize_first_error(e)}), 400
 
     answers = req.answers
-    score_correct = req.score_correct
-    score_total = req.score_total
 
     conn = get_connection()
     try:
-        # セッション存在チェック
+        # BACKEND-13: recompute the score server-side from the persisted
+        # questions. The body still carries score_correct / score_total
+        # for backwards compat, but trusting the client lets a malicious
+        # save inflate analytics. The canonical answer is in DB.
         row = conn.execute(
-            "SELECT id FROM quiz_sessions WHERE session_id = ?", (session_id,)
+            "SELECT id, questions FROM quiz_sessions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
         if row is None:
             return jsonify({"error": "セッションが見つかりません。"}), 404
+
+        try:
+            persisted_questions = json.loads(row["questions"] or "[]")
+            if not isinstance(persisted_questions, list):
+                persisted_questions = []
+        except (json.JSONDecodeError, TypeError):
+            persisted_questions = []
+
+        score_total = len(persisted_questions)
+        score_correct = 0
+        for q in persisted_questions:
+            if not isinstance(q, dict):
+                continue
+            qid = q.get("id")
+            expected = q.get("answer")
+            given = answers.get(qid)
+            if (
+                isinstance(qid, str)
+                and isinstance(expected, str)
+                and isinstance(given, str)
+                and given.strip().lower() == expected.strip().lower()
+            ):
+                score_correct += 1
 
         answered_at = datetime.now(timezone.utc).isoformat()
         conn.execute(
@@ -273,7 +298,14 @@ def save_answers(session_id: str):
              answered_at, session_id),
         )
         conn.commit()
-        return jsonify({"message": "回答を保存しました。", "answered_at": answered_at}), 200
+        return jsonify({
+            "message": "回答を保存しました。",
+            "answered_at": answered_at,
+            # Echo the canonical (server-computed) score so the FE can
+            # reconcile its local view if it had drifted.
+            "score_correct": score_correct,
+            "score_total": score_total,
+        }), 200
     finally:
         conn.close()
 
