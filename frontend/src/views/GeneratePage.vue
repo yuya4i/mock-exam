@@ -969,7 +969,15 @@ function sourceIcon(type) {
   return '📄'
 }
 
+// FRONTEND-7: rapid clicks on different document tiles let the
+// /results responses arrive out of order; the slower (older) request
+// would clobber savedSessions for the newer selection. We track a
+// monotonically-increasing request token and ignore responses whose
+// token != the latest one.
+let _docSelectToken = 0
+
 async function selectDocument(doc) {
+  const myToken = ++_docSelectToken
   selectedDocId.value = doc.id
   params.value.source = doc.url || doc.title || ''
   sidebarMobileOpen.value = false
@@ -983,11 +991,15 @@ async function selectDocument(doc) {
   loadingSavedSessions.value = true
   try {
     const res = await api.get('/results', { params: { document_id: doc.id } })
+    if (myToken !== _docSelectToken) return  // newer click landed
     savedSessions.value = res.data.sessions || []
   } catch (_) {
+    if (myToken !== _docSelectToken) return
     savedSessions.value = []
   } finally {
-    loadingSavedSessions.value = false
+    if (myToken === _docSelectToken) {
+      loadingSavedSessions.value = false
+    }
   }
 }
 
@@ -1182,6 +1194,12 @@ async function onDiagramError(payload) {
   const failedQuestion = allQuestions.find((q) => q.id === failedId)
   const level = failedQuestion?.level || 'K2'
 
+  // FRONTEND-8: capture the target session_id at request time. If the
+  // user navigates / loadSavedSession before the response arrives,
+  // we'd otherwise splice the replacement into a different session
+  // (worst case: into the saved-session view of an unrelated quiz).
+  const targetSessionId = quizStore.result.session_id || ''
+
   try {
     const res = await api.post('/quiz/regenerate-question', {
       source: sourceUrl,
@@ -1191,11 +1209,19 @@ async function onDiagramError(payload) {
       depth: params.value.depth,
       doc_types: params.value.doc_types,
       exclude_topics: excludeTopics,
-      session_id: quizStore.result.session_id || '',
+      session_id: targetSessionId,
       question_id: failedId,
     })
     const replacement = res.data?.question
     if (!replacement) return
+
+    // FRONTEND-8: discard the response if the active session changed.
+    if ((quizStore.result?.session_id || '') !== targetSessionId) {
+      console.warn(
+        '[regen] session changed during regen; discarding response',
+      )
+      return
+    }
 
     // ID は使い回す (ユーザーの解答状態と整合させるため)
     replacement.id = failedId
