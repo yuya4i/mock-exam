@@ -27,7 +27,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import api from '@/composables/useApi'
 
 const ollamaStatus = ref('unknown')
@@ -42,10 +42,28 @@ async function checkOllama() {
   }
 }
 
+// FRONTEND-13: clear the interval on unmount AND on Vite HMR dispose.
+// Without this, every hot-reload during dev installs another timer
+// without cleaning the prior one — over a few minutes of edits the
+// /api/health endpoint gets hammered by stale stacked intervals.
+let _ollamaTimer = null
+
 onMounted(() => {
   checkOllama()
-  setInterval(checkOllama, 30000)
+  _ollamaTimer = setInterval(checkOllama, 30000)
 })
+
+onBeforeUnmount(() => {
+  if (_ollamaTimer) clearInterval(_ollamaTimer)
+  _ollamaTimer = null
+})
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (_ollamaTimer) clearInterval(_ollamaTimer)
+    _ollamaTimer = null
+  })
+}
 </script>
 
 <style>
