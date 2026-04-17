@@ -82,43 +82,55 @@ export async function streamSSE(url, init = {}, onEvent, signal) {
     throw new Error('SSE 応答にボディがありません。')
   }
 
+  // FRONTEND-4: pin the reader+stream cleanup in a finally so an
+  // AbortSignal cancellation, a parse-throw, or any other early exit
+  // doesn't leave the underlying ReadableStream locked forever (which
+  // pins the response, the connection, and the parsed-event closures
+  // alive). Both releaseLock and body.cancel are best-effort — they
+  // throw if the reader was never acquired or the stream is already
+  // released; we swallow those because the only correct response is
+  // "we tried".
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
+      // Events are separated by a blank line. Hold the trailing partial
+      // chunk in `buffer` until the next read completes it.
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop()
 
-    // Events are separated by a blank line. Hold the trailing partial
-    // chunk in `buffer` until the next read completes it.
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop()
-
-    for (const part of parts) {
-      if (!part.trim()) continue
-      let eventType = 'message'
-      let eventData = ''
-      for (const line of part.split('\n')) {
-        if (line.startsWith('event: ')) {
-          eventType = line.slice(7)
-        } else if (line.startsWith('data: ')) {
-          // Multiple data: lines per event are part of the spec; we
-          // only see single-line JSON in practice.
-          eventData = line.slice(6)
+      for (const part of parts) {
+        if (!part.trim()) continue
+        let eventType = 'message'
+        let eventData = ''
+        for (const line of part.split('\n')) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7)
+          } else if (line.startsWith('data: ')) {
+            // Multiple data: lines per event are part of the spec; we
+            // only see single-line JSON in practice.
+            eventData = line.slice(6)
+          }
         }
+        if (!eventData) continue
+        let parsed
+        try {
+          parsed = JSON.parse(eventData)
+        } catch (_) {
+          // Malformed data line — skip, do not propagate (server-side
+          // parsing is supposed to guarantee JSON).
+          continue
+        }
+        onEvent(eventType, parsed)
       }
-      if (!eventData) continue
-      let parsed
-      try {
-        parsed = JSON.parse(eventData)
-      } catch (_) {
-        // Malformed data line — skip, do not propagate (server-side
-        // parsing is supposed to guarantee JSON).
-        continue
-      }
-      onEvent(eventType, parsed)
     }
+  } finally {
+    try { reader.releaseLock() } catch (_) {}
+    try { await response.body.cancel() } catch (_) {}
   }
 }
