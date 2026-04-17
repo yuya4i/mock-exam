@@ -93,6 +93,15 @@ const props = defineProps({
   regenerating:{ type: Boolean, default: false },
 })
 
+// SEC-12 / FRONTEND-9: defense-in-depth scheme guard. The backend
+// already filters non-http(s) URLs out of pages[] in _build_result,
+// but a stale cache or manual API call could still hand us one.
+function _isSafeHref(url) {
+  if (typeof url !== 'string' || !url) return false
+  const lower = url.trim().toLowerCase()
+  return lower.startsWith('http://') || lower.startsWith('https://')
+}
+
 // source_hint のテキストから該当ページURLを検索し、一致しなければソースURLへフォールバック
 const sourceLink = computed(() => {
   const info = props.sourceInfo
@@ -106,13 +115,11 @@ const sourceLink = computed(() => {
     ) || info.pages.find(
       (p) => p.title && p.title.toLowerCase().includes(lowerHint.split(/[・\s]/)[0]?.toLowerCase() || '')
     )
-    if (matched?.url) return matched.url
+    if (matched?.url && _isSafeHref(matched.url)) return matched.url
   }
 
   const src = info.source
-  if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
-    return src
-  }
+  if (_isSafeHref(src)) return src
   return ''
 })
 

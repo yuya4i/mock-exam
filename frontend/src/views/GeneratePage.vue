@@ -221,13 +221,13 @@
                   class="doc-type-badge"
                 >{{ docTypeLabel(dt) }}</span>
               </div>
-              <!-- 収集ページ一覧 -->
-              <details v-if="preview.pages?.length > 1" class="pages-detail">
-                <summary>収集ページ一覧 ({{ preview.pages.length }}件)</summary>
+              <!-- 収集ページ一覧 (SEC-12: defense-in-depth scheme guard) -->
+              <details v-if="safePreviewPages.length > 1" class="pages-detail">
+                <summary>収集ページ一覧 ({{ safePreviewPages.length }}件)</summary>
                 <ul class="pages-list">
-                  <li v-for="p in preview.pages" :key="p.url">
+                  <li v-for="p in safePreviewPages" :key="p.url">
                     <span class="page-depth">Lv.{{ p.depth }}</span>
-                    <a :href="p.url" target="_blank" rel="noopener">{{ p.title || p.url }}</a>
+                    <a :href="p.url" target="_blank" rel="noopener noreferrer">{{ p.title || p.url }}</a>
                   </li>
                 </ul>
               </details>
@@ -1241,6 +1241,22 @@ function increaseDepth() {
 function decreaseDepth() {
   if (params.value.depth > 1) params.value.depth--
 }
+
+// SEC-12 / FRONTEND-9: defense-in-depth — backend already filters
+// non-http(s) page URLs in _build_result, but a stale/cached response
+// or out-of-band fetch could still land one here, and `<a :href>`
+// would happily honor javascript: / data: schemes on click.
+function _isSafeHref(url) {
+  if (typeof url !== 'string' || !url) return false
+  const lower = url.trim().toLowerCase()
+  return lower.startsWith('http://') || lower.startsWith('https://')
+}
+
+const safePreviewPages = computed(() => {
+  const arr = preview.value?.pages
+  if (!Array.isArray(arr)) return []
+  return arr.filter((p) => _isSafeHref(p?.url))
+})
 
 async function previewContent() {
   if (!params.value.source) return
