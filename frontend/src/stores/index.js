@@ -124,6 +124,25 @@ export const useQuizStore = defineStore('quiz', () => {
   let _isAppendMode = false
 
   async function generate(params) {
+    // FRONTEND-1: cancel any in-flight generate before starting a new
+    // one. Without this, the old stream's _handleEvent calls would
+    // see the new value of _isAppendMode and corrupt state (e.g. the
+    // pre-fix code would treat the old stream's source_info as if it
+    // were the new request and either wipe a saved session or skip a
+    // legitimate fresh wipe).
+    //
+    // FRONTEND-2: also flush the pending answers debounce so a save
+    // scheduled against the previous session doesn't fire AFTER we
+    // wipe userAnswers below.
+    if (abortController) {
+      try { abortController.abort() } catch (_) {}
+    }
+    if (_saveTimer) {
+      clearTimeout(_saveTimer)
+      _saveTimer = null
+      try { await _flushSaveAnswers() } catch (_) {}
+    }
+
     const isAppend = !!params.append_to_session_id
     _isAppendMode = isAppend
 
@@ -250,9 +269,16 @@ export const useQuizStore = defineStore('quiz', () => {
   // が読む quiz_sessions.user_answers / score_correct / score_total
   // を追随させる。
   let _saveTimer = null
+  // FRONTEND-2: capture session_id at schedule time, not at flush.
+  // Without this, a save scheduled for session A could end up POST-ing
+  // to session B's endpoint if a fresh generate landed in the
+  // intervening 600ms.
+  let _pendingSaveSid = null
 
   function _scheduleSaveAnswers() {
     if (_saveTimer) clearTimeout(_saveTimer)
+    _pendingSaveSid = result.value?.session_id || null
+    if (!_pendingSaveSid) return  // no session to save against
     _saveTimer = setTimeout(() => {
       _saveTimer = null
       _flushSaveAnswers().catch(() => {})
@@ -260,8 +286,14 @@ export const useQuizStore = defineStore('quiz', () => {
   }
 
   async function _flushSaveAnswers() {
-    const sid = result.value?.session_id
+    // Use the sid captured at schedule time, falling back to current
+    // (covers manual flushes that bypass the schedule).
+    const sid = _pendingSaveSid || result.value?.session_id
+    _pendingSaveSid = null
     if (!sid) return
+    // Refuse to save if the current session changed under us — those
+    // answers are stale for the new session anyway.
+    if (result.value?.session_id && result.value.session_id !== sid) return
     const answers = { ...userAnswers.value }
     if (Object.keys(answers).length === 0) return
     const s = score.value || { correct: 0, total: 0 }
@@ -308,6 +340,7 @@ export const useQuizStore = defineStore('quiz', () => {
       clearTimeout(_saveTimer)
       _saveTimer = null
     }
+    _pendingSaveSid = null
     result.value      = null
     userAnswers.value = {}
     revealed.value    = {}
