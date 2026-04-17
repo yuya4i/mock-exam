@@ -149,6 +149,15 @@ async function renderDiagram() {
     // テキストが薄く読みにくくなる既知の問題があるため、自前で配色する。
     mermaid.initialize({
       startOnLoad: false,
+      // SEC-2 defense-in-depth. Mermaid v11 already defaults to
+      // 'strict' (DOMPurify-sanitized SVG, no html labels, no
+      // javascript: click handlers) but we make it explicit so a
+      // future config refactor can't silently regress.
+      securityLevel: 'strict',
+      // Disable inline HTML in flowchart node labels. Without this
+      // a node like A["<b>x</b>"] would emit a foreignObject; with
+      // strict securityLevel that is sanitized, but belt+braces.
+      flowchart: { htmlLabels: false },
       theme: 'base',
       fontFamily: "'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif",
       themeVariables: {

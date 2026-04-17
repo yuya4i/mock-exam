@@ -14,6 +14,13 @@ from app.services.content_service import ContentService
 
 logger = logging.getLogger(__name__)
 
+# Cap on Mermaid diagram source length (chars). LLM occasionally emits
+# absurdly large diagrams (or a prompt-injected source could try to);
+# we drop anything over this so the FE parser doesn't get DoS'd and so
+# v-html doesn't ship 100KB of attacker-controlled bytes to the DOM
+# (SEC-2 mitigation, defense-in-depth atop Mermaid's strict mode).
+MAX_DIAGRAM_CHARS = 8_000
+
 # ======================================================================
 # 品質保証システムプロンプト
 # ======================================================================
@@ -478,14 +485,41 @@ class QuizService:
 
     @staticmethod
     def _sanitize_diagram(raw_diagram: str) -> str:
-        """Mermaid記法として有効になるようサニタイズする。"""
+        """Mermaid記法として有効になるようサニタイズし、XSSになり得る
+        危険トークンを除去する。
+
+        Mermaid (>=11) は default ``securityLevel='strict'`` で v-html
+        sink に流す前に DOMPurify を通すので一次防御は FE 側にあるが、
+        将来 mermaid のデフォルトが緩和されたり LLM が巨大な diagram を
+        吐いた時に v-html 経由で 100KB クラスのバイト列が DOM に流れ込む
+        のは避けたい。バックエンド境界で:
+            1. 長さ上限 MAX_DIAGRAM_CHARS を超えたら丸ごと棄却。
+            2. 完全な HTML タグ ``<...>`` を除去。
+            3. 閉じ ``>`` 無し の ``<scriptxxx`` 形 (regex 1 がスキップする)
+               も dangling-tag-opener として剝がす。
+            4. HTML エンティティをデコード (Mermaid syntax compat)。
+            5. 先頭キーワードが mermaid の図種でなければ空文字。
+        """
         if not raw_diagram or not raw_diagram.strip():
             return ""
+        # 1. Length cap (DoS / v-html flooding guard, SEC-2)
+        if len(raw_diagram) > MAX_DIAGRAM_CHARS:
+            return ""
+
         d = raw_diagram.strip()
         # HTMLタグ系の改行をLFに置換
         d = re.sub(r'<br\s*/?\s*>', '\n', d, flags=re.IGNORECASE)
-        # 残ったHTMLタグを除去
+        # 完全なタグを除去
         d = re.sub(r'<[^>]+>', '', d)
+        # 閉じ ``>`` 無しの危険な opener (例: `<scripthello`) も剝がす。
+        # 旧実装は `<[^>]+>` だけだったため `<` で始まり `>` で閉じない
+        # 文字列をすり抜けていた (SEC-2 bypass surface)。
+        d = re.sub(
+            r'<\s*(script|iframe|object|embed|svg|foreignObject|img|video|audio|source|link|style|meta|base|form|input|button|frame|frameset)\b[^>]*',
+            '',
+            d,
+            flags=re.IGNORECASE,
+        )
         # HTMLエンティティをデコード
         d = d.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
         d = d.replace('&quot;', '"').replace('&#39;', "'")
