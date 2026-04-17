@@ -228,14 +228,36 @@ def _as_ip_or_none(text: str) -> Optional[ipaddress._BaseAddress]:
         return None
 
 
+_NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> Optional[ipaddress.IPv4Address]:
+    """Pull the IPv4 address out of an IPv4-mapped or NAT64-mapped IPv6.
+
+    ``ipaddress.IPv6Address.ipv4_mapped`` only handles ``::ffff:0:0/96``
+    (the standard IPv4-mapped form). The NAT64 well-known prefix
+    ``64:ff9b::/96`` (RFC 6052) embeds the IPv4 in the low 32 bits but
+    Python doesn't expose a helper for it, so an attacker could ship a
+    URL like ``http://[64:ff9b::ac10:1]/`` (which is 172.16.0.1) and
+    sail past the IPv4 private check (SEC-9).
+    """
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in _NAT64_PREFIX:
+        # Low 32 bits = embedded IPv4
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return None
+
+
 def _is_metadata_ip(ip: ipaddress._BaseAddress) -> bool:
     if isinstance(ip, ipaddress.IPv4Address):
         return str(ip) in METADATA_HOSTS_V4
     if isinstance(ip, ipaddress.IPv6Address):
         if str(ip) in METADATA_HOSTS_V6:
             return True
-        if ip.ipv4_mapped is not None:
-            return _is_metadata_ip(ip.ipv4_mapped)
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None:
+            return _is_metadata_ip(embedded)
     return False
 
 
@@ -245,8 +267,10 @@ def _is_public_ip(ip: ipaddress._BaseAddress) -> bool:
     ipaddress considers link-local IPv4 as just "link-local"."""
     if _is_metadata_ip(ip):
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        return _is_public_ip(ip.ipv4_mapped)
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None:
+            return _is_public_ip(embedded)
     if ip.is_loopback or ip.is_link_local or ip.is_multicast:
         return False
     if ip.is_private or ip.is_reserved or ip.is_unspecified:
