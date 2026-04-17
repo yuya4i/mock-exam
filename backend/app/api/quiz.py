@@ -57,11 +57,16 @@ def _save_quiz_session(result: dict, params: dict) -> None:
           を消すことはなくなる (BACKEND-2 race fix)。
         - levels も同じトランザクションで current ∪ new をマージ。
         - セッションが消えていれば何もしない (削除との race を黙って許容)。
-    """
-    try:
-        from app.database import get_connection
-        conn = get_connection()
 
+    Errors propagate to the caller (event_stream) so the SSE pipeline
+    can surface a "保存に失敗しました" event INSTEAD of a misleading
+    "done" event (BACKEND-7 + BACKEND-11). The previous implementation
+    swallowed exceptions into a log.warning, leaving the FE convinced
+    the session was saved.
+    """
+    from app.database import get_connection
+    conn = get_connection()
+    try:
         source_info = result.get("source_info", {})
         document_id = source_info.get("document_id")
         title = source_info.get("title", "")
@@ -71,9 +76,6 @@ def _save_quiz_session(result: dict, params: dict) -> None:
 
         if params.get("append_to_session_id"):
             sid = result["session_id"]
-            # Caller is expected to pass _append_new_questions (only the
-            # newly generated batch). Fall back to result["questions"]
-            # for tests / older call sites.
             new_questions = params.get("_append_new_questions")
             if new_questions is None:
                 new_questions = result.get("questions", [])
@@ -86,7 +88,7 @@ def _save_quiz_session(result: dict, params: dict) -> None:
                 ).fetchone()
                 if row is None:
                     # Session was deleted between request start and save.
-                    # Don't resurrect it.
+                    # Don't resurrect it. (Treated as a successful no-op.)
                     conn.rollback()
                     return
 
@@ -155,9 +157,8 @@ def _save_quiz_session(result: dict, params: dict) -> None:
                 ),
             )
             conn.commit()
+    finally:
         conn.close()
-    except Exception as e:
-        logger.warning(f"クイズセッションDB保存エラー: {e}")
 
 
 def _load_existing_session(session_id: str) -> dict | None:
@@ -339,15 +340,26 @@ def generate_quiz():
                         data["questions"] = merged
                         data["question_count"] = len(merged)
 
-                yield _sse(event_type, data)
-
-                if event_type == "done":
+                    # BACKEND-7 + BACKEND-11: persist BEFORE yielding the
+                    # terminal "done" event so the FE never sees a
+                    # successful completion for a session that wasn't
+                    # actually saved. If save raises, emit an explicit
+                    # save-error and skip the done.
                     if append_sid:
                         save_params["_append_new_questions"] = new_questions_only
-                    # SQLite is the canonical store post P1-E. The
-                    # legacy JSON-backed HistoryService was removed
-                    # (audit M-006).
-                    _save_quiz_session(data, save_params)
+                    try:
+                        _save_quiz_session(data, save_params)
+                    except Exception as save_err:
+                        logger.error(
+                            f"クイズセッション保存エラー: {save_err}",
+                            exc_info=True,
+                        )
+                        yield _sse("error", {
+                            "message": f"クイズの保存に失敗しました: {save_err}",
+                        })
+                        return  # do not also yield done
+
+                yield _sse(event_type, data)
 
         except ConnectionError as e:
             yield _sse("error", {"message": str(e)})
