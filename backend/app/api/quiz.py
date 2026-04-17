@@ -350,12 +350,14 @@ def generate_quiz():
                     try:
                         _save_quiz_session(data, save_params)
                     except Exception as save_err:
+                        # SEC-11: full detail in log only.
                         logger.error(
                             f"クイズセッション保存エラー: {save_err}",
                             exc_info=True,
                         )
                         yield _sse("error", {
-                            "message": f"クイズの保存に失敗しました: {save_err}",
+                            "message": "クイズの保存に失敗しました。"
+                                       "サーバーログを確認してください。",
                         })
                         return  # do not also yield done
 
@@ -364,8 +366,11 @@ def generate_quiz():
         except ConnectionError as e:
             yield _sse("error", {"message": str(e)})
         except Exception as e:
+            # SEC-11: opaque to client, full traceback in log.
             logger.error(f"問題生成ストリームエラー: {e}", exc_info=True)
-            yield _sse("error", {"message": f"問題生成エラー: {e}"})
+            yield _sse("error", {
+                "message": "問題生成中に内部エラーが発生しました。",
+            })
 
     return Response(
         stream_with_context(event_stream()),
@@ -453,8 +458,11 @@ def regenerate_question():
     except ConnectionError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
+        # SEC-11: opaque to client, full traceback in log.
         logger.error(f"問題再生成エラー: {e}", exc_info=True)
-        return jsonify({"error": f"問題再生成エラー: {e}"}), 500
+        return jsonify({
+            "error": "問題再生成中に内部エラーが発生しました。",
+        }), 500
 
     if question is None:
         return jsonify({"error": "問題の生成に失敗しました（2回リトライ済み）"}), 500

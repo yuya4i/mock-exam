@@ -59,10 +59,16 @@ def preview_content():
         )
         return jsonify(result), 200
     except ValueError as e:
+        # ValueError carries a user-safe message (UnsafeURLError etc.).
         return jsonify({"error": str(e)}), 422
     except Exception as e:
+        # SEC-11: don't echo arbitrary exception text to the client; it
+        # can carry internal URLs, hostnames, paths, or library
+        # internals. Log full detail, return a fixed message.
         logger.error(f"コンテンツ取得エラー: {e}", exc_info=True)
-        return jsonify({"error": f"コンテンツ取得エラー: {e}"}), 500
+        return jsonify({
+            "error": "コンテンツ取得中に内部エラーが発生しました。"
+        }), 500
 
 
 @content_bp.post("/content/fetch")
@@ -81,8 +87,11 @@ def fetch_content():
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
     except Exception as e:
+        # SEC-11: opaque to client, full detail in log (see preview branch).
         logger.error(f"コンテンツ取得エラー: {e}", exc_info=True)
-        return jsonify({"error": f"コンテンツ取得エラー: {e}"}), 500
+        return jsonify({
+            "error": "コンテンツ取得中に内部エラーが発生しました。"
+        }), 500
 
 
 @content_bp.get("/content/scrape-stream")
