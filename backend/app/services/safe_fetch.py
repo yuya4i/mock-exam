@@ -39,21 +39,28 @@ Opt-in overrides (environment variables)
 * ``MAX_FETCH_BYTES=<int>`` — override the body size cap.
 * ``MAX_REDIRECTS=<int>`` — override the redirect cap (``0`` disables).
 
-Residual risk — DNS rebinding
------------------------------
-``check_url`` resolves the hostname once and validates each returned IP.
-A TOCTOU race is possible between resolution and socket connect because
-``requests`` re-resolves the hostname when opening the TCP connection.
-Mitigation at this level is best-effort; for high-value deployments,
-confine the backend to a network namespace without a route to RFC1918.
-This is documented in ``SECURITY.md``.
+DNS rebinding mitigation (BACKEND-9)
+------------------------------------
+``check_url`` resolves the hostname once and validates each returned IP,
+then ``safe_get`` pins those IPs in a thread-local override table and
+patches ``socket.getaddrinfo`` so the ensuing ``requests`` connect cannot
+re-resolve to a different (private) target. The pin is per-thread and
+per-hop, so concurrent ``safe_get`` calls and redirect chains are each
+isolated. ``contextlib.nullcontext`` is used for IP-literal URLs.
+
+Residual: this only covers connects performed in the Python process.
+The Camoufox/Firefox subprocess does its own DNS resolution and remains
+exposed to rebinding; for high-value deployments, run the backend in a
+network namespace without a route to RFC1918 (see ``SECURITY.md``).
 """
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import os
 import socket
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -61,6 +68,78 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------
+# Thread-local DNS pinning (BACKEND-9)
+# --------------------------------------------------------------------------
+# Closes the TOCTOU window between ``check_url`` (which validates each
+# resolved IP against the SSRF policy) and the actual TCP connect (which
+# would otherwise re-resolve via ``socket.getaddrinfo`` and could land on
+# a different — possibly private — IP, the classic DNS rebinding attack).
+#
+# We install a single process-wide replacement for ``socket.getaddrinfo``
+# that fast-paths to the original when no override is active for the
+# requested hostname, and otherwise returns ONLY the IPs that
+# ``check_url`` already validated. The override map is kept in
+# threading.local so concurrent ``safe_get`` calls don't stomp on each
+# other.
+#
+# Limitation: this only covers connects made from THIS Python process.
+# Subprocess fetchers (Camoufox / Firefox) re-resolve DNS in their own
+# process and need a network-namespace level fix; see SECURITY.md.
+# --------------------------------------------------------------------------
+_dns_overrides = threading.local()
+_original_getaddrinfo = socket.getaddrinfo
+
+
+def _patched_getaddrinfo(host, port, *args, **kwargs):
+    overrides = getattr(_dns_overrides, "map", None)
+    if overrides and host in overrides:
+        pinned = overrides[host]
+        results = []
+        for ip_str in pinned:
+            try:
+                ip_obj = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            if isinstance(ip_obj, ipaddress.IPv4Address):
+                results.append((
+                    socket.AF_INET, socket.SOCK_STREAM, 0, "", (ip_str, port),
+                ))
+            else:
+                # IPv6 sockaddr: (host, port, flowinfo, scope_id)
+                results.append((
+                    socket.AF_INET6, socket.SOCK_STREAM, 0, "",
+                    (ip_str, port, 0, 0),
+                ))
+        if results:
+            return results
+        # Fallthrough if every pinned IP failed to parse
+    return _original_getaddrinfo(host, port, *args, **kwargs)
+
+
+socket.getaddrinfo = _patched_getaddrinfo
+
+
+@contextlib.contextmanager
+def pin_dns(hostname: str, ips: list[str]):
+    """Within the context, ``socket.getaddrinfo(hostname, ...)`` returns
+    only the listed IPs. Pre-existing entries are preserved and restored.
+    Thread-local: parallel ``safe_get`` calls don't collide.
+    """
+    if not hasattr(_dns_overrides, "map"):
+        _dns_overrides.map = {}
+    prev_present = hostname in _dns_overrides.map
+    prev_value = _dns_overrides.map.get(hostname)
+    _dns_overrides.map[hostname] = list(ips)
+    try:
+        yield
+    finally:
+        if prev_present:
+            _dns_overrides.map[hostname] = prev_value
+        else:
+            _dns_overrides.map.pop(hostname, None)
 
 
 # --------------------------------------------------------------------------
@@ -294,13 +373,28 @@ def safe_get(
     for hop in range(policy.max_redirects + 1):
         check_url(current_url, policy)
 
-        resp = s.get(
-            current_url,
-            allow_redirects=False,
-            stream=True,
-            timeout=timeout,
-            headers=headers,
-        )
+        # BACKEND-9: pin the resolved IPs for the connect so a DNS
+        # rebinding race between check_url and requests' own
+        # getaddrinfo can't redirect us to a private target. We re-use
+        # the same resolution check_url just performed.
+        parsed = urlparse(current_url)
+        hostname = parsed.hostname
+        pin_ctx = contextlib.nullcontext()
+        if hostname and _as_ip_or_none(hostname) is None:
+            try:
+                resolved_now = _resolve_all_ips(hostname)
+                pin_ctx = pin_dns(hostname, [str(ip) for ip in resolved_now])
+            except socket.gaierror:
+                pass  # fall through; check_url already vetted, connect will fail anyway
+
+        with pin_ctx:
+            resp = s.get(
+                current_url,
+                allow_redirects=False,
+                stream=True,
+                timeout=timeout,
+                headers=headers,
+            )
 
         if resp.status_code in (301, 302, 303, 307, 308):
             location = resp.headers.get("Location")
