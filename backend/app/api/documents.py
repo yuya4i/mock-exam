@@ -168,11 +168,27 @@ def create_document():
 
 @documents_bp.delete("/documents/<int:doc_id>")
 def delete_document(doc_id: int):
-    """ドキュメントを削除する。"""
+    """ドキュメントを削除する。
+
+    quiz_sessions が document_id でこの行を参照していると、PRAGMA
+    foreign_keys=ON + REFERENCES (ON DELETE 句なし = RESTRICT) のため
+    DELETE が IntegrityError で 500 になっていた (BACKEND-1)。
+
+    挙動: 履歴セッションは保持したいので CASCADE ではなく SET NULL
+    相当を選択。先に参照行の document_id を NULL に更新してから DELETE
+    する。両者を同一 sqlite3 接続のトランザクションで実行することで
+    部分失敗を防ぐ。
+    """
     conn = get_connection()
     try:
-        cursor = conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-        conn.commit()
+        with conn:  # commits on success, rollbacks on exception
+            conn.execute(
+                "UPDATE quiz_sessions SET document_id = NULL WHERE document_id = ?",
+                (doc_id,),
+            )
+            cursor = conn.execute(
+                "DELETE FROM documents WHERE id = ?", (doc_id,)
+            )
         if cursor.rowcount == 0:
             return jsonify({"error": "ドキュメントが見つかりません。"}), 404
         return jsonify({"message": "削除しました。"}), 200
