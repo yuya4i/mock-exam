@@ -98,8 +98,31 @@ def _truncate(text: str, max_len: int, marker: str = "…") -> str:
 # camoufoxが利用可能かどうかのフラグ（起動時に確認）
 _CAMOUFOX_AVAILABLE: bool | None = None
 
-# キャッシュ（URL → 取得結果）
+import threading as _threading
+
+# キャッシュ（URL → 取得結果）。
+# cachetools.TTLCache は thread-safe ではない (purge と mutation が
+# 同じ内部状態を触る) ため、gunicorn の thread worker や future-async
+# 化で並行アクセスが入ると `RuntimeError: dictionary changed size
+# during iteration` 等で例外になる (BACKEND-8)。
+# 軽量な Lock で読み・書き・存在確認を直列化する。
 _cache: TTLCache = TTLCache(maxsize=CACHE_MAXSIZE, ttl=CACHE_TTL)
+_cache_lock = _threading.Lock()
+
+
+def _cache_get(key):
+    """Return cached value or None. Thread-safe."""
+    with _cache_lock:
+        try:
+            return _cache[key]
+        except KeyError:
+            return None
+
+
+def _cache_set(key, value) -> None:
+    """Insert into cache. Thread-safe (mutating + purge under lock)."""
+    with _cache_lock:
+        _cache[key] = value
 
 HEADERS = {
     "User-Agent": (
@@ -315,15 +338,16 @@ class CamoufoxPlugin(SourcePlugin):
         cache_key = hashlib.md5(
             f"{source}|{depth}|{sorted(doc_types)}".encode()
         ).hexdigest()
-        if cache_key in _cache:
-            return _cache[cache_key]
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
 
         if _is_camoufox_available():
             result = self._fetch_with_camoufox(source, depth, doc_types, policy)
         else:
             result = self._fetch_with_requests(source, depth, doc_types, policy)
 
-        _cache[cache_key] = result
+        _cache_set(cache_key, result)
         return result
 
     # ------------------------------------------------------------------
