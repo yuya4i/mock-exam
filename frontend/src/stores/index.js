@@ -423,23 +423,47 @@ export const useResultsStore = defineStore('results', () => {
     sessions.value.reduce((acc, s) => acc + (s.question_count || 0), 0)
   )
 
-  async function fetchResults() {
+  // FRONTEND-3: every auto-saved answer used to trigger fetchResults,
+  // which is 3 parallel HTTP calls (sessions / categories / breakdown).
+  // For a quiz where the user clicks through 20 answers in a few
+  // seconds that's 60+ requests — wasteful since the user almost
+  // certainly isn't watching the analytics tab between clicks.
+  // Throttle: at most once every 2s. ResultsPage mounts with
+  // force=true so navigating to the tab still gets a fresh snapshot.
+  const FETCH_MIN_INTERVAL_MS = 2000
+  let _lastFetchAt = 0
+  let _inflightPromise = null
+
+  async function fetchResults({ force = false } = {}) {
+    const now = Date.now()
+    if (!force && now - _lastFetchAt < FETCH_MIN_INTERVAL_MS) {
+      return _inflightPromise || undefined
+    }
+    if (_inflightPromise) {
+      // De-dupe concurrent forced fetches into one network round trip.
+      return _inflightPromise
+    }
     loading.value = true
     error.value   = null
-    try {
-      const [sessRes, catRes, bdRes] = await Promise.all([
-        api.get('/results'),
-        api.get('/results/categories'),
-        api.get('/results/categories/breakdown'),
-      ])
-      sessions.value   = sessRes.data.sessions   || []
-      categories.value = catRes.data.categories   || []
-      breakdown.value  = bdRes.data.categories   || []
-    } catch (e) {
-      error.value = e.message
-    } finally {
-      loading.value = false
-    }
+    _lastFetchAt = now
+    _inflightPromise = (async () => {
+      try {
+        const [sessRes, catRes, bdRes] = await Promise.all([
+          api.get('/results'),
+          api.get('/results/categories'),
+          api.get('/results/categories/breakdown'),
+        ])
+        sessions.value   = sessRes.data.sessions   || []
+        categories.value = catRes.data.categories   || []
+        breakdown.value  = bdRes.data.categories   || []
+      } catch (e) {
+        error.value = e.message
+      } finally {
+        loading.value = false
+        _inflightPromise = null
+      }
+    })()
+    return _inflightPromise
   }
 
   async function getSession(sessionId) {

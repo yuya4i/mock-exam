@@ -4,7 +4,7 @@
     <div class="page-header">
       <h2 class="section-title">分析</h2>
       <span class="total-count">{{ resultsStore.totalSessions }} セッション</span>
-      <button class="btn btn-secondary" @click="resultsStore.fetchResults()" :disabled="resultsStore.loading" style="margin-left:auto">
+      <button class="btn btn-secondary" @click="resultsStore.fetchResults({ force: true })" :disabled="resultsStore.loading" style="margin-left:auto">
         <span v-if="resultsStore.loading" class="spinner"></span>
         <span v-else>更新</span>
       </button>
@@ -530,7 +530,9 @@ async function executeDelete() {
 }
 
 onMounted(() => {
-  resultsStore.fetchResults()
+  // Force-fetch when entering the analytics page so the user sees a
+  // fresh snapshot even if the per-save throttle is "still cooling".
+  resultsStore.fetchResults({ force: true })
 })
 </script>
 
