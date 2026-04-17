@@ -468,48 +468,61 @@ def _replace_question_in_session(
 
     The new question's ``id`` is forced to match ``old_question_id``
     so the user's existing answer (if any) stays referentially valid.
+
+    Concurrency: BEGIN IMMEDIATE wraps the SELECT→UPDATE so two
+    parallel regenerate-question calls (different question_ids in
+    the same session) are serialized on the SQLite writer lock
+    instead of racing snapshot vs. snapshot. Without this lock the
+    second writer's stale snapshot would silently discard the first
+    writer's edit (BACKEND-5).
     """
     try:
         from app.database import get_connection
         conn = get_connection()
-        row = conn.execute(
-            "SELECT questions FROM quiz_sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None:
-            conn.close()
-            return False
-
         try:
-            questions = json.loads(row["questions"] or "[]")
-        except (json.JSONDecodeError, TypeError):
-            conn.close()
-            return False
-        if not isinstance(questions, list):
-            conn.close()
-            return False
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT questions FROM quiz_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
 
-        # Stable ID makes the answer columns and revealed-state map
-        # carry over without renumbering.
-        new_question = {**new_question, "id": old_question_id}
+            try:
+                questions = json.loads(row["questions"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                conn.rollback()
+                return False
+            if not isinstance(questions, list):
+                conn.rollback()
+                return False
 
-        replaced = False
-        for i, q in enumerate(questions):
-            if isinstance(q, dict) and q.get("id") == old_question_id:
-                questions[i] = new_question
-                replaced = True
-                break
-        if not replaced:
+            # Stable ID makes the answer columns and revealed-state map
+            # carry over without renumbering.
+            new_question = {**new_question, "id": old_question_id}
+
+            replaced = False
+            for i, q in enumerate(questions):
+                if isinstance(q, dict) and q.get("id") == old_question_id:
+                    questions[i] = new_question
+                    replaced = True
+                    break
+            if not replaced:
+                conn.rollback()
+                return False
+
+            conn.execute(
+                "UPDATE quiz_sessions SET questions = ? WHERE session_id = ?",
+                (json.dumps(questions, ensure_ascii=False), session_id),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
             conn.close()
-            return False
-
-        conn.execute(
-            "UPDATE quiz_sessions SET questions = ? WHERE session_id = ?",
-            (json.dumps(questions, ensure_ascii=False), session_id),
-        )
-        conn.commit()
-        conn.close()
-        return True
     except Exception as e:
         logger.warning(f"問題差し替えのDB更新エラー: {e}")
         return False
