@@ -23,6 +23,10 @@ def client(tmp_path, monkeypatch):
     importlib.reload(paths_mod)
     import app.database as db_mod
     importlib.reload(db_mod)
+    # Reload results so the SEC-7 per-session rate-limit dict starts
+    # empty (otherwise sequential tests on the same session hit 429).
+    import app.api.results as results_mod
+    importlib.reload(results_mod)
     import app as app_mod
     importlib.reload(app_mod)
     db_mod.init_db()

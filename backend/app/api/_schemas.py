@@ -70,6 +70,19 @@ def is_valid_session_id(value: str) -> bool:
     return isinstance(value, str) and bool(SESSION_ID_RE.match(value))
 
 
+# SEC-6: Ollama model names follow a narrow shape (lower-case alnum +
+# `:` for tag + `.`/`/`/`_`/`-` separators); accepting anything as-is
+# means the FE could ship a bogus or DoS-shaped value (e.g. an
+# arbitrarily long string with shell metacharacters or an unsupported
+# Ollama URL prefix). Pin the shape; clients that legitimately need
+# new chars can extend the regex with a justification.
+MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-]{1,128}$")
+
+
+def is_valid_model_name(value: str) -> bool:
+    return isinstance(value, str) and bool(MODEL_NAME_RE.match(value))
+
+
 # --------------------------------------------------------------------------
 # Error humanization
 # --------------------------------------------------------------------------
@@ -143,11 +156,20 @@ class ContentRequest(_ScrapeMixin):
 class QuizGenerateRequest(_ScrapeMixin):
     """Body for ``POST /api/quiz/generate``."""
 
-    model: str = Field(min_length=1, max_length=256)
+    model: str = Field(min_length=1, max_length=128)
     count: int = Field(default=5, ge=1, le=20)
     levels: list[KLevel] = Field(default_factory=lambda: ["K2", "K3", "K4"])
     difficulty: Difficulty = "medium"
     ollama_options: dict = Field(default_factory=dict)
+
+    @field_validator("model", mode="after")
+    @classmethod
+    def _check_model_charset(cls, v: str) -> str:
+        if not is_valid_model_name(v):
+            raise ValueError(
+                "model は 1〜128 文字の英数字 / `:` / `.` / `/` / `_` / `-` で指定してください。"
+            )
+        return v
 
     # Optional: when set, the new questions are APPENDED to the existing
     # session instead of starting a fresh one. The route handler:
@@ -197,10 +219,19 @@ class RegenerateQuestionRequest(_ScrapeMixin):
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
 
-    model: str = Field(min_length=1, max_length=256)
+    model: str = Field(min_length=1, max_length=128)
     level: KLevel = "K2"
     difficulty: Difficulty = "medium"
     ollama_options: dict = Field(default_factory=dict)
+
+    @field_validator("model", mode="after")
+    @classmethod
+    def _check_model_charset(cls, v: str) -> str:
+        if not is_valid_model_name(v):
+            raise ValueError(
+                "model は 1〜128 文字の英数字 / `:` / `.` / `/` / `_` / `-` で指定してください。"
+            )
+        return v
 
     # Topics already in the session (free-form short strings). The
     # diversity prompt seeds these so the regenerated question explores

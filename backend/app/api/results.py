@@ -3,6 +3,8 @@ Results API Blueprint
 クイズセッション結果のCRUDエンドポイント。
 """
 import json
+import threading
+import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -20,6 +22,37 @@ def _bad_session_id_response():
     return jsonify({
         "error": "session_id は 1〜64 文字の英数字 / ハイフン / アンダースコアで指定してください。",
     }), 400
+
+
+# SEC-7: per-session rate limit on /results/<sid>/answers.
+# The frontend already debounces saves at 600ms, but a malicious
+# client could hammer this endpoint and force SQLite into a write
+# storm. We enforce a minimum 200ms gap between saves on the same
+# session_id; faster requests get 429 with a Retry-After.
+_SAVE_MIN_INTERVAL_SEC = 0.2
+_save_last_ts: dict[str, float] = {}
+_save_last_ts_lock = threading.Lock()
+
+
+def _save_rate_limit_check(session_id: str) -> tuple | None:
+    """Return a (response, status) tuple if the request should be
+    refused, otherwise None and record the timestamp.
+
+    Module-state map; for a multi-process deployment this is per-worker
+    (acceptable: the global ceiling scales with worker count, still
+    bounded). The map is allowed to grow unboundedly in theory, but
+    realistic session counts are tiny and entries are tiny too.
+    """
+    now = time.monotonic()
+    with _save_last_ts_lock:
+        prev = _save_last_ts.get(session_id)
+        if prev is not None and (now - prev) < _SAVE_MIN_INTERVAL_SEC:
+            wait_ms = int((_SAVE_MIN_INTERVAL_SEC - (now - prev)) * 1000)
+            return jsonify({
+                "error": f"保存リクエストが速すぎます。{wait_ms}ms 後に再試行してください。",
+            }), 429
+        _save_last_ts[session_id] = now
+    return None
 
 results_bp = Blueprint("results", __name__)
 
@@ -250,6 +283,12 @@ def save_answers(session_id: str):
         req = AnswersRequest.model_validate(body)
     except ValidationError as e:
         return jsonify({"error": humanize_first_error(e)}), 400
+
+    # Rate-limit AFTER body validation so a bad request doesn't burn a
+    # slot on the legitimate caller.
+    rate_resp = _save_rate_limit_check(session_id)
+    if rate_resp is not None:
+        return rate_resp
 
     answers = req.answers
 
