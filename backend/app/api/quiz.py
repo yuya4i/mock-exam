@@ -385,26 +385,45 @@ def regenerate_question():
     except ValidationError as e:
         return jsonify({"error": humanize_first_error(e)}), 400
 
-    # If the failing question belongs to a saved session whose source
-    # was already scraped and stored, reuse that content instead of
-    # re-scraping. Also collect the session's existing question bodies
-    # for the duplicate-detection retry loop so the replacement for a
-    # broken diagram can't happen to be a restatement of another
-    # question already in the set.
+    # SEC-3: validate session / question_id references BEFORE spending
+    # LLM cycles. Historically the endpoint would happily call Ollama
+    # for any session_id / question_id pair; an invalid pair merely
+    # resulted in persisted=false. That turns this endpoint into a
+    # free-for-all LLM proxy for anyone who can reach it.
+    #
+    # Rules:
+    #   - session_id without question_id is ambiguous (what is being
+    #     replaced?) → 400.
+    #   - session_id pointing at no row → 404.
+    #   - session_id + unknown question_id in that session → 404.
+    #   - no session_id at all: still allowed (transient regen path
+    #     used by the frontend before a session is persisted).
     source_info_override: dict | None = None
     exclude_question_texts: list[str] = []
+    if req.session_id and not req.question_id:
+        return jsonify({
+            "error": "session_id を指定する場合は question_id も必須です。",
+        }), 400
     if req.session_id:
         loaded = _load_existing_session(req.session_id)
-        if loaded:
-            exclude_question_texts = [
-                q.get("question", "")
-                for q in loaded["questions"]
-                if isinstance(q, dict)
-            ]
-            if loaded.get("document_id"):
-                source_info_override = _load_document_as_source_info(
-                    loaded["document_id"],
-                )
+        if loaded is None:
+            return jsonify({"error": "対象のセッションが見つかりません。"}), 404
+        known_ids = {
+            q.get("id") for q in loaded["questions"] if isinstance(q, dict)
+        }
+        if req.question_id not in known_ids:
+            return jsonify({
+                "error": "対象の問題がセッション内に存在しません。",
+            }), 404
+        exclude_question_texts = [
+            q.get("question", "")
+            for q in loaded["questions"]
+            if isinstance(q, dict)
+        ]
+        if loaded.get("document_id"):
+            source_info_override = _load_document_as_source_info(
+                loaded["document_id"],
+            )
 
     try:
         question = _quiz_service.generate_single_question(

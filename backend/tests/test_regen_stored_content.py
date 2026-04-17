@@ -157,9 +157,16 @@ def test_regenerate_endpoint_uses_stored_document(monkeypatch):
         quiz_module._quiz_service, "generate_single_question", fake_single,
     )
     # Stub the document loader so we don't need a real SQLite row.
+    # questions must include the ID we'll target — SEC-3 fix now
+    # 404s on a question_id that isn't in the loaded session.
     monkeypatch.setattr(
         quiz_module, "_load_existing_session",
-        lambda sid: {"questions": [], "topics": [], "document_id": 77},
+        lambda sid: {
+            "questions": [{"id": "Q001", "question": "old", "topic": "t",
+                           "level": "K2"}],
+            "topics": [],
+            "document_id": 77,
+        },
     )
     monkeypatch.setattr(
         quiz_module, "_load_document_as_source_info",
