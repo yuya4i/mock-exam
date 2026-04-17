@@ -48,9 +48,15 @@ def _save_quiz_session(result: dict, params: dict) -> None:
     """クイズセッションをSQLiteに保存する。
 
     Append mode (``params["append_to_session_id"]`` が真) では:
-        - INSERT ではなく UPDATE。
-        - questions / question_count / generated_at を上書き。
-        - levels は既存と新規をマージ (重複排除しつつ順序保持)。
+        - ``params["_append_new_questions"]`` で「今回生成した分のみ」を受け取る
+          (snapshot を含む全件ではない)。caller の event_stream 側で
+          切り出して渡している。
+        - BEGIN IMMEDIATE で writer ロックを取り、現在の questions を
+          再取得し、new を base+1 から連番採番して append し、UPDATE する。
+          並行 +N リクエストが snapshot を共有していても、後勝ちで先行分
+          を消すことはなくなる (BACKEND-2 race fix)。
+        - levels も同じトランザクションで current ∪ new をマージ。
+        - セッションが消えていれば何もしない (削除との race を黙って許容)。
     """
     try:
         from app.database import get_connection
@@ -61,40 +67,74 @@ def _save_quiz_session(result: dict, params: dict) -> None:
         title = source_info.get("title", "")
         source_url = source_info.get("source", "")
         category = _derive_category(title, source_url)
-        all_questions = result.get("questions", [])
         new_levels = params.get("levels", [])
 
         if params.get("append_to_session_id"):
-            # Merge levels: existing ∪ new, preserve order, dedup.
-            row = conn.execute(
-                "SELECT levels FROM quiz_sessions WHERE session_id = ?",
-                (result["session_id"],),
-            ).fetchone()
-            if row:
-                try:
-                    existing_levels = json.loads(row["levels"] or "[]")
-                except (json.JSONDecodeError, TypeError):
-                    existing_levels = []
-                merged_levels = list(dict.fromkeys(existing_levels + new_levels))
-            else:
-                merged_levels = list(new_levels)
+            sid = result["session_id"]
+            # Caller is expected to pass _append_new_questions (only the
+            # newly generated batch). Fall back to result["questions"]
+            # for tests / older call sites.
+            new_questions = params.get("_append_new_questions")
+            if new_questions is None:
+                new_questions = result.get("questions", [])
 
-            conn.execute(
-                """UPDATE quiz_sessions
-                   SET questions = ?,
-                       question_count = ?,
-                       levels = ?,
-                       generated_at = ?
-                   WHERE session_id = ?""",
-                (
-                    json.dumps(all_questions, ensure_ascii=False),
-                    len(all_questions),
-                    json.dumps(merged_levels, ensure_ascii=False),
-                    result.get("generated_at", ""),
-                    result["session_id"],
-                ),
-            )
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT questions, levels FROM quiz_sessions WHERE session_id = ?",
+                    (sid,),
+                ).fetchone()
+                if row is None:
+                    # Session was deleted between request start and save.
+                    # Don't resurrect it.
+                    conn.rollback()
+                    return
+
+                try:
+                    current_questions = json.loads(row["questions"] or "[]")
+                    if not isinstance(current_questions, list):
+                        current_questions = []
+                except (json.JSONDecodeError, TypeError):
+                    current_questions = []
+                try:
+                    current_levels = json.loads(row["levels"] or "[]")
+                    if not isinstance(current_levels, list):
+                        current_levels = []
+                except (json.JSONDecodeError, TypeError):
+                    current_levels = []
+
+                base = len(current_questions)
+                renumbered: list = []
+                for i, q in enumerate(new_questions):
+                    if isinstance(q, dict):
+                        q = dict(q)
+                        q["id"] = f"Q{base + i + 1:03d}"
+                    renumbered.append(q)
+
+                merged_questions = current_questions + renumbered
+                merged_levels = list(dict.fromkeys(current_levels + new_levels))
+
+                conn.execute(
+                    """UPDATE quiz_sessions
+                       SET questions = ?,
+                           question_count = ?,
+                           levels = ?,
+                           generated_at = ?
+                       WHERE session_id = ?""",
+                    (
+                        json.dumps(merged_questions, ensure_ascii=False),
+                        len(merged_questions),
+                        json.dumps(merged_levels, ensure_ascii=False),
+                        result.get("generated_at", ""),
+                        sid,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         else:
+            all_questions = result.get("questions", [])
             conn.execute(
                 """INSERT OR IGNORE INTO quiz_sessions
                    (session_id, document_id, model, source_title, source_type,
@@ -114,7 +154,7 @@ def _save_quiz_session(result: dict, params: dict) -> None:
                     result.get("generated_at", ""),
                 ),
             )
-        conn.commit()
+            conn.commit()
         conn.close()
     except Exception as e:
         logger.warning(f"クイズセッションDB保存エラー: {e}")
@@ -283,17 +323,27 @@ def generate_quiz():
     def event_stream():
         try:
             for event_type, data in _quiz_service.generate_incremental(**service_kwargs):
-                # Append mode: merge existing questions into the done
-                # payload BEFORE yielding, so the frontend's done handler
-                # ends up with the full set (existing + new).
-                if event_type == "done" and append_sid:
-                    merged = list(existing_questions) + data.get("questions", [])
-                    data["questions"] = merged
-                    data["question_count"] = len(merged)
+                if event_type == "done":
+                    # Capture the freshly generated questions BEFORE we
+                    # mutate `data["questions"]` to the merged view.
+                    # `_save_quiz_session` (append branch) consumes this
+                    # via params["_append_new_questions"] so its atomic
+                    # merge sees only the new batch — see BACKEND-2.
+                    new_questions_only = list(data.get("questions", []))
+                    if append_sid:
+                        # Frontend "done" handler still wants the full
+                        # set (snapshot existing + new); the canonical
+                        # set in DB may differ if another append landed
+                        # in between, but the FE can refetch.
+                        merged = list(existing_questions) + new_questions_only
+                        data["questions"] = merged
+                        data["question_count"] = len(merged)
 
                 yield _sse(event_type, data)
 
                 if event_type == "done":
+                    if append_sid:
+                        save_params["_append_new_questions"] = new_questions_only
                     # SQLite is the canonical store post P1-E. The
                     # legacy JSON-backed HistoryService was removed
                     # (audit M-006).
