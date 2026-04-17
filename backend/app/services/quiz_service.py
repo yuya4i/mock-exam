@@ -127,6 +127,45 @@ def _build_previous_topics_block(topics: list[str]) -> str:
     )
 
 
+def _is_valid_question_shape(q) -> bool:
+    """Strict structural check on a JSON object the LLM returned as a
+    single quiz question (SEC-1).
+
+    Hard failures (return False so the caller retries):
+        - not a dict
+        - ``question`` missing or empty / whitespace-only
+        - ``choices`` missing, not a dict, or has fewer than 2 entries
+        - any choice value isn't a non-empty string
+        - any choice key isn't a non-empty string
+        - ``answer`` missing or doesn't equal one of the choice keys
+          (case-insensitive)
+
+    Soft issues (level/topic/explanation/source_hint missing or wrong
+    type) are left for ``_normalize_question`` to default.
+    """
+    if not isinstance(q, dict):
+        return False
+    question = q.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return False
+    choices = q.get("choices")
+    if not isinstance(choices, dict) or len(choices) < 2:
+        return False
+    keys_lower: set[str] = set()
+    for k, v in choices.items():
+        if not isinstance(k, str) or not k.strip():
+            return False
+        if not isinstance(v, str) or not v.strip():
+            return False
+        keys_lower.add(k.strip().lower())
+    answer = q.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        return False
+    if answer.strip().lower() not in keys_lower:
+        return False
+    return True
+
+
 def _normalize_question_text(text: str) -> str:
     """Normalize a question body for duplicate detection.
 
@@ -478,7 +517,13 @@ class QuizService:
                 logger.debug(f"JSON parse failed: {json_str[:300]}")
                 return None
 
-        if not isinstance(q, dict) or "question" not in q:
+        # SEC-1: structural validation BEFORE normalize. Without this,
+        # the LLM could return {"question": "x"} with no choices/answer
+        # and we'd happily render a dead-end card with no answerable
+        # buttons. Each "hard" failure here returns None so the caller's
+        # retry loop produces another candidate; "soft" defaults are
+        # left to _normalize_question.
+        if not _is_valid_question_shape(q):
             return None
 
         return self._normalize_question(q, qnum - 1)
