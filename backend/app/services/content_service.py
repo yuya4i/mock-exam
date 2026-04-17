@@ -658,26 +658,35 @@ class ContentService:
     def register(self, plugin: SourcePlugin) -> None:
         self._plugins.append(plugin)
 
-    def fetch(self, source: str, **kwargs) -> dict:
+    def fetch(self, source: str, *, persist: bool = True, **kwargs) -> dict:
         """
         kwargs:
             depth     (int):  スクレイピング階層数（1〜8）
             doc_types (list): 対象ドキュメント種別 ["table","csv","pdf","png"]
+            persist   (bool): True なら documents テーブルに保存。
+                              preview 経由 (read-only) は False で呼ぶ。
+                              BACKEND-3: 以前は preview も常に保存していた。
         """
         for plugin in self._plugins:
             if plugin.can_handle(source):
                 result = plugin.fetch(source, **kwargs)
-                # スクレイピング結果をドキュメントDBに自動保存（重複時はスキップ）
-                doc_id = self._save_to_db(result)
-                if doc_id is not None:
-                    result["document_id"] = doc_id
+                if persist:
+                    # スクレイピング結果をdocumentsテーブルに保存（重複時はスキップ）
+                    doc_id = self._save_to_db(result)
+                    if doc_id is not None:
+                        result["document_id"] = doc_id
                 return result
         raise ValueError("対応するコンテンツソースが見つかりません。")
 
     def preview(self, source: str, max_chars: int = 500, **kwargs) -> dict:
-        """UIプレビュー用に先頭のみ返す（depth=1固定）。"""
+        """UIプレビュー用に先頭のみ返す（depth=1固定、DBには保存しない）。
+
+        ``persist=False`` で fetch を呼ぶことで documents テーブルへの
+        side-effect を持たない read-only な経路にする。実保存は明示的な
+        /api/content/fetch (= generate flow) に限定する。
+        """
         kwargs["depth"] = 1  # プレビューは1階層のみ
-        result = self.fetch(source, **kwargs)
+        result = self.fetch(source, persist=False, **kwargs)
         result["preview"] = result["content"][:max_chars] + (
             "..." if len(result["content"]) > max_chars else ""
         )
