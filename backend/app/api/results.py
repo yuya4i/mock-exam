@@ -12,7 +12,14 @@ from app.api._schemas import (
     AnswersRequest,
     ValidationError,
     humanize_first_error,
+    is_valid_session_id,
 )
+
+
+def _bad_session_id_response():
+    return jsonify({
+        "error": "session_id は 1〜64 文字の英数字 / ハイフン / アンダースコアで指定してください。",
+    }), 400
 
 results_bp = Blueprint("results", __name__)
 
@@ -207,6 +214,8 @@ def category_breakdown():
 @results_bp.get("/results/<session_id>")
 def get_result(session_id: str):
     """セッション詳細（questions・answers含む）を返す。"""
+    if not is_valid_session_id(session_id):
+        return _bad_session_id_response()
     conn = get_connection()
     try:
         row = conn.execute(
@@ -234,6 +243,8 @@ def save_answers(session_id: str):
     ユーザーの回答を保存する。
     Body: {answers: {qId: "a"}, score_correct: N, score_total: N}
     """
+    if not is_valid_session_id(session_id):
+        return _bad_session_id_response()
     body = request.get_json(silent=True) or {}
     try:
         req = AnswersRequest.model_validate(body)
@@ -270,6 +281,8 @@ def save_answers(session_id: str):
 @results_bp.delete("/results/<session_id>")
 def delete_result(session_id: str):
     """セッションを削除する。"""
+    if not is_valid_session_id(session_id):
+        return _bad_session_id_response()
     conn = get_connection()
     try:
         cursor = conn.execute(

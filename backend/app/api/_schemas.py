@@ -47,12 +47,27 @@ __all__ = [
     "humanize_first_error",
 ]
 
+import re
+
 MAX_DEPTH = 8
 MAX_DOCUMENT_CONTENT_BYTES = 1 * 1024 * 1024  # match documents.py P0-2 cap
 
 DocType = Literal["table", "csv", "pdf", "png"]
 KLevel = Literal["K1", "K2", "K3", "K4"]
 Difficulty = Literal["easy", "medium", "hard"]
+
+# SEC-5: session_id is generated server-side as uuid4 (36-char dashed),
+# but every API surface that accepts one (request body + URL path)
+# previously only checked length. A weird session_id wouldn't reach SQL
+# injection (we use parameter binding) but it could end up logged,
+# echoed back into URLs, or used in path joins by future code. Pin the
+# allowed charset to the actual generated alphabet plus a small bit of
+# slack (underscores) for tests / future namespacing.
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def is_valid_session_id(value: str) -> bool:
+    return isinstance(value, str) and bool(SESSION_ID_RE.match(value))
 
 
 # --------------------------------------------------------------------------
@@ -158,6 +173,15 @@ class QuizGenerateRequest(_ScrapeMixin):
             return None
         return v
 
+    @field_validator("append_to_session_id", mode="after")
+    @classmethod
+    def _check_session_id_charset(cls, v):
+        if v is not None and not is_valid_session_id(v):
+            raise ValueError(
+                "append_to_session_id は 1〜64 文字の英数字 / ハイフン / アンダースコアで指定してください。"
+            )
+        return v
+
 
 # --------------------------------------------------------------------------
 # Single-question regenerate
@@ -195,6 +219,15 @@ class RegenerateQuestionRequest(_ScrapeMixin):
             return None
         if isinstance(v, str) and v.strip() == "":
             return None
+        return v
+
+    @field_validator("session_id", mode="after")
+    @classmethod
+    def _check_session_id_charset(cls, v):
+        if v is not None and not is_valid_session_id(v):
+            raise ValueError(
+                "session_id は 1〜64 文字の英数字 / ハイフン / アンダースコアで指定してください。"
+            )
         return v
 
 
