@@ -22,7 +22,13 @@ services:
       - MAX_REDIRECTS=${MAX_REDIRECTS:-}
     volumes:
       - ./backend:/app
-      - quiz-cache:/app/.cache
+      # Persistence moved from named volume `quiz-cache` to a host bind
+      # mount (./data) so the SQLite DB and any other cached artifacts
+      # survive `docker compose down -v`, project-name changes, and
+      # `docker volume prune`. Also makes the data inspectable /
+      # backupable from the host without `docker cp`. Host directory
+      # owner must be UID 1000 (matches the prod appuser); see Dockerfile.
+      - ./data:/app/.cache
       - backend-packages:/usr/local/lib/python3.11/site-packages
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -101,8 +107,8 @@ services:
           path: ./frontend/Dockerfile.dev
 
 volumes:
-  quiz-cache:
-    driver: local
+  # quiz-cache was removed; SQLite + cache now live on the host at
+  # ./data/ via bind mount (see backend.volumes above).
   backend-packages:
     driver: local
   frontend-node-modules:

@@ -25,7 +25,12 @@ services:
       - MAX_FETCH_BYTES=${MAX_FETCH_BYTES:-}
       - MAX_REDIRECTS=${MAX_REDIRECTS:-}
     volumes:
-      - quiz-cache:/app/.cache
+      # Persistence on host bind mount (./data) instead of a named
+      # volume so the SQLite DB survives `docker compose down -v`,
+      # project-name changes, and `docker volume prune`. Owner must
+      # be UID 1000 to match the appuser the prod image runs as
+      # (see backend/Dockerfile + docker-entrypoint.sh).
+      - ./data:/app/.cache
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -51,6 +56,5 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-volumes:
-  quiz-cache:
-    driver: local
+# quiz-cache was removed; SQLite + cache now live on the host at
+# ./data/ via bind mount (see backend.volumes above).
