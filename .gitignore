@@ -17,3 +17,9 @@ dist/
 test-results/
 playwright-report/
 playwright/.cache/
+
+# Host-mounted persistent data (SQLite + scrape cache).
+# The directory itself is tracked via .gitkeep so a fresh clone
+# already has the bind-mount target; the contents are runtime state.
+/data/*
+!/data/.gitkeep
