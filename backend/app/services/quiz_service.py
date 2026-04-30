@@ -5,6 +5,7 @@ QuizService
 """
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -22,54 +23,76 @@ logger = logging.getLogger(__name__)
 MAX_DIAGRAM_CHARS = 8_000
 
 # ======================================================================
+# LLM 性能チューニング (PERF-B)
+# ======================================================================
+# Ollama の num_ctx デフォルトは 2048 トークン。 content (~12000 文字 ≈
+# 6000+ トークン) を渡すとモデル側で勝手に truncate されて品質劣化する
+# ため、content 量に応じて動的に num_ctx を設定する。最大値は GPU/メモリ
+# 依存だが、汎用 8B モデルなら 8192 が現実的な上限。OLLAMA_NUM_CTX_MAX
+# 環境変数で運用上の上限を引き上げ可能。
+NUM_CTX_DEFAULT     = 8192
+NUM_CTX_MIN         = 2048
+NUM_CTX_MAX         = int(os.getenv("OLLAMA_NUM_CTX_MAX", "8192"))
+# 1 文字 ≒ 0.5 token (日本語) の概算 + system_prompt (~600 token) +
+# 出力余裕 1024 で逆算。安全側に倒すため 0.6 倍。
+CHARS_PER_TOKEN     = 0.6
+SYSTEM_PROMPT_TOKENS_EST = 600
+OUTPUT_RESERVE_TOKENS    = 1024
+
+# Per-question 試行時間 (連結タイムアウト)。Ollama の (connect, read) で渡す。
+# 大きい num_ctx + 重いモデル (20B+) では最初の token までに 30〜60 秒
+# かかるので read は十分に取る。
+QUESTION_CONNECT_TIMEOUT = int(os.getenv("OLLAMA_CONNECT_TIMEOUT", "5"))
+QUESTION_READ_TIMEOUT    = int(os.getenv("OLLAMA_READ_TIMEOUT", "180"))
+
+# モデル自動フォールバック。指定された model が未インストール時に
+# OLLAMA_FALLBACK_MODELS (カンマ区切り) を順に試す。空ならエラー。
+FALLBACK_MODELS = [
+    m.strip() for m in os.getenv("OLLAMA_FALLBACK_MODELS", "").split(",")
+    if m.strip()
+]
+
+
+def _compute_num_ctx(content_chars: int) -> int:
+    """Pick an Ollama num_ctx that fits this session's content + system
+    prompt + output reserve, clamped to the operator's MAX."""
+    estimated = (
+        int(content_chars * CHARS_PER_TOKEN)
+        + SYSTEM_PROMPT_TOKENS_EST
+        + OUTPUT_RESERVE_TOKENS
+    )
+    # Round up to the next power-of-two-ish for cleaner allocation.
+    # (Ollama doesn't strictly require this, but it keeps the value
+    # human-readable and avoids per-question fluctuation.)
+    for tier in (2048, 4096, 6144, 8192, 12288, 16384, 24576, 32768):
+        if estimated <= tier:
+            return min(tier, max(NUM_CTX_MIN, NUM_CTX_MAX))
+    return min(NUM_CTX_MAX, 32768)
+
+# ======================================================================
 # 品質保証システムプロンプト
 # ======================================================================
 SYSTEM_PROMPT = """\
-あなたは資格試験問題作成の専門家です。
-与えられた学習資料の内容に厳密に基づき、**1問だけ**高品質な4択問題を作成してください。
+あなたは資格試験問題作成の専門家です。提供された学習資料に厳密に基づき、高品質な4択問題を1問だけ作成してください。
 
-━━━ 品質基準 ━━━
+【品質基準】
+1. 正確性: 問題・選択肢・解説は全て資料の記述に基づき、捏造しない。
+2. 明瞭性: 一読で意味が確定する日本語。二重否定・曖昧な限定詞は禁止。
+3. ディストラクタ: 不正解は「学習不足者が選びそうな もっともらしい誤り」に。
+4. 解説: 正解の根拠を資料から引用 + 各不正解の誤り理由を個別解説 (合計200字以上)。
+5. 知識レベル:
+   - K1 記憶: 用語/定義の想起
+   - K2 理解: 概念の意味・目的・理由
+   - K3 適用: 具体シナリオでの判断
+   - K4 分析: 複数概念の比較/統合/評価
+6. 図表 (任意): 理解を助けるなら `diagram` に Mermaid 記法で記述。不要なら `""`。
+   使える記法: graph TD / flowchart LR / sequenceDiagram / classDiagram /
+   stateDiagram-v2 / erDiagram / gantt / pie / mindmap / timeline /
+   xychart-beta / quadrantChart / journey / sankey-beta / C4Context
+   問題内容に最適なものを 1 つ選ぶ (画一的に同じ記法を使わない)。
 
-1. **正確性**: 問題文・選択肢・解説はすべて提供された学習資料の記述に基づくこと。
-   資料に記載のない情報を捏造しないこと。
-2. **明瞭性**: 問題文は一読で意味が確定する明確な日本語で書くこと。
-   二重否定・曖昧な限定詞（「ほとんど」「多くの場合」等）は避ける。
-3. **誘引力のある選択肢**: 不正解の選択肢（ディストラクタ）は、
-   学習が不十分な受験者が選びそうな「もっともらしい誤り」にすること。
-   明らかに関係のない選択肢は含めない。
-4. **解説の深さ**: 正解の根拠を資料の該当箇所を引用して説明し、
-   さらに各不正解選択肢がなぜ誤りかを個別に解説すること（合計200字以上）。
-5. **知識レベルの遵守**:
-   - K1（記憶）: 定義・用語の正確な想起を問う
-   - K2（理解）: 概念の意味・目的・理由を問う
-   - K3（適用）: 具体的なシナリオで正しい行動・判断を問う
-   - K4（分析）: 複数の概念を比較・統合・評価させる
-6. **図表の活用**: 問題の理解を助けるためにグラフ・フローチャート・表などが
-   有効な場合は、`diagram` フィールドにMermaid記法で図を記述してよい。
-   不要であれば `diagram` は空文字列 "" にすること。
-   利用可能なMermaid記法:
-   - `graph TD` / `flowchart LR`: プロセス・分岐・フロー図
-   - `sequenceDiagram`: 処理シーケンス・通信手順
-   - `classDiagram`: クラス構造・継承関係
-   - `stateDiagram-v2`: 状態遷移
-   - `erDiagram`: エンティティ関係（DBスキーマ等）
-   - `gantt`: スケジュール・ガントチャート
-   - `pie`: 割合・円グラフ
-   - `gitGraph`: バージョン管理・ブランチ戦略
-   - `mindmap`: 概念マップ・階層構造
-   - `timeline`: 時系列・歴史的変遷
-   - `xychart-beta`: 散布図・折れ線グラフ・棒グラフ
-   - `quadrantChart`: 象限分析（重要度×緊急度 等）
-   - `journey`: ユーザージャーニー・体験マップ
-   - `requirementDiagram`: 要求事項の関連
-   - `sankey-beta`: 流量・遷移可視化
-   - `C4Context`: アーキテクチャコンテキスト図
-   問題内容に最適な記法を1つ選択すること（画一的に同じ記法を使わない）。
-
-━━━ 出力形式（厳守） ━━━
-
-以下のJSONオブジェクト **1つのみ** を出力してください。前後に説明文を付けないこと。
-
+【出力】
+以下の JSON オブジェクト 1 つだけを返す。前後に説明文を付けない。
 ```json
 {
   "id": "Q001",
@@ -77,15 +100,10 @@ SYSTEM_PROMPT = """\
   "topic": "テーマ名",
   "question": "問題文",
   "diagram": "graph TD; A-->B",
-  "choices": {
-    "a": "選択肢a",
-    "b": "選択肢b",
-    "c": "選択肢c",
-    "d": "選択肢d"
-  },
+  "choices": {"a": "...", "b": "...", "c": "...", "d": "..."},
   "answer": "a",
-  "explanation": "正解の根拠と各選択肢の解説（200字以上）",
-  "source_hint": "根拠となる資料の章・セクション名"
+  "explanation": "200字以上の解説",
+  "source_hint": "資料の章・セクション名"
 }
 ```
 """
@@ -94,7 +112,15 @@ SYSTEM_PROMPT = """\
 # 1問生成用ユーザープロンプト
 # ======================================================================
 SINGLE_Q_TEMPLATE = """\
-以下の学習資料から模擬問題を **1問だけ** 作成してください。
+【学習資料】
+タイトル: {title}
+出典: {source}
+収集ページ数: {page_count}
+収集ドキュメント種別: {doc_types}
+
+{content}
+
+━━━ ここから出題条件 (問題ごとに変化) ━━━
 
 【条件】
 - 問題ID: Q{qnum:03d}
@@ -103,14 +129,6 @@ SINGLE_Q_TEMPLATE = """\
 - 言語: 日本語
 
 {previous_topics_block}
-
-【学習資料】
-タイトル: {title}
-出典: {source}
-収集ページ数: {page_count}
-収集ドキュメント種別: {doc_types}
-
-{content}
 
 【出力】
 JSONオブジェクト1つのみを出力してください。"""
@@ -191,6 +209,58 @@ class QuizService:
         self.content = ContentService()
 
     # ------------------------------------------------------------------
+    # PERF-B Phase 5: モデル解決 + 自動フォールバック
+    # ------------------------------------------------------------------
+    def _resolve_model(self, requested: str) -> str:
+        """Return the actual model name to send to Ollama.
+
+        Resolution order:
+          1. ``requested`` is installed → use as-is.
+          2. ``OLLAMA_FALLBACK_MODELS`` (env, comma-separated) — first
+             one that's installed wins, logged so the operator notices.
+          3. ``requested`` is unknown AND no fallback → return ``requested``
+             unchanged so Ollama can either auto-pull it (the default
+             behavior since v0.1.x) or surface its own clear "model not
+             found" error. We don't pre-empt that case because:
+               - tests mock ``self.ollama`` and shouldn't need to also
+                 mock ``list_models``,
+               - some operators rely on Ollama's auto-pull on first use,
+               - the upstream error message is more actionable than
+                 our pre-flight one when the listing itself fails.
+          4. ``ConnectionError`` from list_models propagates so the API
+             layer maps it to 503 (Ollama unreachable, distinct from
+             "model missing").
+        """
+        try:
+            installed = [m["name"] for m in self.ollama.list_models()]
+        except ConnectionError:
+            raise
+        except Exception as e:
+            logger.warning(
+                f"_resolve_model: list_models 失敗 ({e}) — "
+                f"指定 model={requested!r} のまま継続"
+            )
+            return requested
+
+        if requested in installed:
+            return requested
+
+        for fallback in FALLBACK_MODELS:
+            if fallback in installed:
+                logger.warning(
+                    f"[QuizService] model={requested!r} 未インストール — "
+                    f"フォールバック {fallback!r} に切替"
+                )
+                return fallback
+
+        if installed:
+            logger.warning(
+                f"[QuizService] model={requested!r} 未インストール (installed={installed[:5]}...) — "
+                f"そのまま Ollama に投げる (auto-pull or error 任せ)"
+            )
+        return requested
+
+    # ------------------------------------------------------------------
     # 1問ずつSSEストリーミング生成（メインAPI）
     # ------------------------------------------------------------------
     def generate_incremental(
@@ -235,6 +305,15 @@ class QuizService:
         if session_id is None:
             session_id = str(uuid.uuid4())
 
+        # PERF-B Phase 5: モデル解決をループ前に 1 回だけ。指定 model が
+        # 未インストールでも、FALLBACK_MODELS にインストール済みのものが
+        # あれば自動切替。20 問生成中に毎回 fail するのを防ぐ。
+        try:
+            model = self._resolve_model(model)
+        except ConnectionError:
+            # Ollama 自体に届かない (起動してない等)。upstream に流す。
+            raise
+
         # ── Step 1: コンテンツ取得 ──
         if source_info_override is not None:
             source_info = source_info_override
@@ -269,9 +348,22 @@ class QuizService:
         # レベルを問題数に応じてラウンドロビンで割り当て
         level_cycle = levels * ((count // len(levels)) + 1)
 
-        options = {"temperature": 0.7, "num_predict": 1024}
+        # PERF-B Phase 4: content 量から num_ctx を動的に決める。Ollama
+        # default 2048 のままだと 12000 文字 (~7000 token) の content が
+        # モデル側で truncate されて品質劣化する。
+        num_ctx = _compute_num_ctx(len(source_info.get("content", "")))
+        options = {
+            "temperature": 0.7,
+            "num_predict": 1024,
+            "num_ctx":     num_ctx,
+        }
         if ollama_options:
             options.update(ollama_options)
+        timeout = (QUESTION_CONNECT_TIMEOUT, QUESTION_READ_TIMEOUT)
+        logger.info(
+            f"[QuizService] model={model} num_ctx={num_ctx} "
+            f"timeout={timeout} count={count}"
+        )
 
         for i in range(count):
             # qnum は append モードで既存件数の続きから振る。
@@ -307,7 +399,7 @@ class QuizService:
             try:
                 question = None
                 for attempt in range(3):
-                    raw = self.ollama.chat(model, messages, options)
+                    raw = self.ollama.chat(model, messages, options, timeout=timeout)
                     parsed = self._parse_single_question(raw, qnum)
                     if not parsed:
                         logger.warning(
@@ -402,14 +494,27 @@ class QuizService:
         if doc_types is None:
             doc_types = ["table", "csv", "pdf", "png"]
 
+        # PERF-B Phase 5: model resolve + fallback (same path as
+        # generate_incremental). Single-question regenerate also benefits
+        # from the auto-fallback if the originally chosen model has been
+        # uninstalled since the parent session was created.
+        model = self._resolve_model(model)
+
         if source_info_override is not None:
             source_info = source_info_override
         else:
             source_info = self.content.fetch(source, depth=depth, doc_types=doc_types)
 
-        options = {"temperature": 0.7, "num_predict": 1024}
+        # PERF-B Phase 4: dynamic num_ctx + per-call timeout.
+        num_ctx = _compute_num_ctx(len(source_info.get("content", "")))
+        options = {
+            "temperature": 0.7,
+            "num_predict": 1024,
+            "num_ctx":     num_ctx,
+        }
         if ollama_options:
             options.update(ollama_options)
+        timeout = (QUESTION_CONNECT_TIMEOUT, QUESTION_READ_TIMEOUT)
 
         user_prompt = SINGLE_Q_TEMPLATE.format(
             qnum=qnum,
@@ -434,7 +539,7 @@ class QuizService:
         seen_texts.discard("")
 
         for attempt in range(3):
-            raw = self.ollama.chat(model, messages, options)
+            raw = self.ollama.chat(model, messages, options, timeout=timeout)
             parsed = self._parse_single_question(raw, qnum)
             if not parsed:
                 logger.warning(

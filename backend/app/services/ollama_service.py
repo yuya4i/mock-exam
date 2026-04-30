@@ -51,10 +51,15 @@ class OllamaService:
         model: str,
         messages: list[dict],
         options: dict | None = None,
+        timeout: tuple[int, int] | None = None,
     ) -> Generator[str, None, None]:
         """
         /api/chat をストリーミングで呼び出し、トークンを逐次 yield する。
         messages は [{"role": "system"|"user"|"assistant", "content": "..."}] 形式。
+
+        timeout: ``(connect, read)`` の秒タプル。指定が無ければ
+                 (TIMEOUT_CONNECT, TIMEOUT_READ) を使用。長文応答や大きい
+                 num_ctx では read を伸ばす必要あり。
         """
         url = f"{self.base_url}/api/chat"
         payload = {
@@ -67,7 +72,7 @@ class OllamaService:
             url,
             json=payload,
             stream=True,
-            timeout=(TIMEOUT_CONNECT, TIMEOUT_READ),
+            timeout=timeout or (TIMEOUT_CONNECT, TIMEOUT_READ),
         ) as resp:
             resp.raise_for_status()
             for raw_line in resp.iter_lines():
@@ -88,9 +93,10 @@ class OllamaService:
         model: str,
         messages: list[dict],
         options: dict | None = None,
+        timeout: tuple[int, int] | None = None,
     ) -> str:
         """ストリーミングを内部で結合して完全な応答文字列を返す。"""
-        return "".join(self.chat_stream(model, messages, options))
+        return "".join(self.chat_stream(model, messages, options, timeout=timeout))
 
     # ------------------------------------------------------------------
     # 接続確認

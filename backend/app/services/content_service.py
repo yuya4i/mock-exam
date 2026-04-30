@@ -12,6 +12,7 @@ camoufoxを使ったボット検出回避スクレイピングに対応した
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import io
@@ -43,10 +44,15 @@ logger = logging.getLogger(__name__)
 # 定数
 # ======================================================================
 MAX_DEPTH         = 8          # 最大階層数（ユーザー指定の上限）
-MAX_PAGES_PER_RUN = 50         # 1回の実行で訪問するページ上限
+MAX_PAGES_PER_RUN = 150        # 1回の実行で訪問するページ上限 (旧50。並列化に伴い拡大)
 MAX_CONTENT_CHARS = 12000      # Ollamaに渡すコンテキスト上限文字数
 CACHE_TTL         = 3600       # キャッシュTTL（秒）
 CACHE_MAXSIZE     = 50
+
+# 並列度設定 (PERF-A: scraping 並列化)
+PARALLEL_PAGES    = 3          # 同時に開く Camoufox page 数
+PARALLEL_FILES    = 8          # 同時にダウンロードする PDF/CSV/PNG 数
+PER_PAGE_TIMEOUT  = 30_000     # ms — page.goto の上限
 
 
 def _is_http_url(value) -> bool:
@@ -351,107 +357,195 @@ class CamoufoxPlugin(SourcePlugin):
         return result
 
     # ------------------------------------------------------------------
-    # camoufox実装
+    # camoufox実装 — async / 並列版 (PERF-A)
     # ------------------------------------------------------------------
+    # 旧実装は単一 page で BFS を直列ループしていたため、
+    #   total ≈ Camoufox起動(5-15秒) + N × (page.goto 2-5秒 + sleep 0.5s)
+    # で 50 ページなら数分。新実装は AsyncCamoufox + asyncio.Semaphore で:
+    #   - depth ごとの「波 (wave)」を並列に処理 (PARALLEL_PAGES=3)
+    #   - PDF/CSV/PNG 等のファイルダウンロードも asyncio.to_thread で
+    #     PARALLEL_FILES=8 まで並列
+    # 同期エントリ (fetch) からは asyncio.run() で橋渡し。
     def _fetch_with_camoufox(
         self, start_url: str, depth: int, doc_types: set,
         policy: FetchPolicy | None = None,
     ) -> dict:
-        from camoufox.sync_api import Camoufox
+        return asyncio.run(
+            self._fetch_with_camoufox_async(start_url, depth, doc_types, policy)
+        )
+
+    async def _fetch_with_camoufox_async(
+        self, start_url: str, depth: int, doc_types: set,
+        policy: FetchPolicy | None = None,
+    ) -> dict:
+        from camoufox.async_api import AsyncCamoufox
 
         policy = policy or FetchPolicy()
         extractor = DocumentExtractor()
-        visited   = set()
-        pages     = []
-        contents  = []
-        found_types = set()
 
-        # BFSキュー: (url, current_depth)
-        queue = deque([(start_url, 0)])
+        # asyncio は単一スレッドなので await を挟まなければ
+        # set/list の atomic ミューテーションは安全。
+        visited: set[str] = set()
+        pages: list[dict] = []
+        contents: list[str] = []
+        found_types: set[str] = set()
+
         base_domain = urlparse(start_url).netloc
+        page_sem = asyncio.Semaphore(PARALLEL_PAGES)
+        file_sem = asyncio.Semaphore(PARALLEL_FILES)
 
-        with Camoufox(headless="virtual", os="linux") as browser:
-            page = browser.new_page()
+        async with AsyncCamoufox(headless="virtual", os="linux") as browser:
 
-            while queue and len(visited) < MAX_PAGES_PER_RUN:
-                url, current_depth = queue.popleft()
-                if url in visited:
-                    continue
-                visited.add(url)
+            async def visit_one(url: str, current_depth: int) -> list[tuple[str, int]]:
+                """Visit ``url``, append page content + extract child links.
 
-                # Pre-flight SSRF check. Firefox does its own DNS so this is
-                # best-effort (see SECURITY.md) but it immediately rejects
-                # the common cases (literal metadata IPs, localhost, etc.)
-                # before Firefox even gets involved.
-                try:
-                    check_url(url, policy)
-                except UnsafeURLError as e:
-                    logger.warning(f"[camoufox] URL拒否: {e}")
-                    continue
+                Returns the list of HTML child links to enqueue for the
+                NEXT wave, after deduping/filtering. File-type children
+                (csv/pdf/png) are dispatched immediately as background
+                downloads via the file semaphore.
+                """
+                next_html: list[tuple[str, int]] = []
+                async with page_sem:
+                    # Pre-flight SSRF (cheap; Camoufox does its own DNS,
+                    # rebinding window is documented as residual).
+                    try:
+                        check_url(url, policy)
+                    except UnsafeURLError as e:
+                        logger.warning(f"[camoufox] URL拒否: {e}")
+                        return next_html
 
-                try:
-                    logger.info(f"[camoufox] 訪問 (depth={current_depth}): {url}")
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    time.sleep(0.5)  # レート制限対策
+                    page = await browser.new_page()
+                    try:
+                        logger.info(
+                            f"[camoufox] 訪問 (depth={current_depth}): {url}"
+                        )
+                        await page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=PER_PAGE_TIMEOUT,
+                        )
+                        # Per-page polite delay. Per-domain rate-limiting
+                        # is left to the operator (Q2: same-domain
+                        # parallel allowed by configuration).
+                        await asyncio.sleep(0.3)
 
-                    html  = page.content()
-                    title = page.title() or url
-                    soup  = BeautifulSoup(html, "lxml")
+                        html = await page.content()
+                        title = (await page.title()) or url
+                    except Exception as e:
+                        logger.warning(f"[camoufox] エラー ({url}): {e}")
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        return next_html
+                    finally:
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
 
-                    page_content = []
-                    page_types   = []
+                soup = BeautifulSoup(html, "lxml")
 
-                    # HTMLテーブル抽出
-                    if "table" in doc_types:
-                        table_text = extractor.extract_tables(soup)
-                        if table_text:
-                            page_content.append(table_text)
-                            page_types.append("table")
-                            found_types.add("table")
+                page_content: list[str] = []
+                page_types: list[str] = []
+                if "table" in doc_types:
+                    table_text = extractor.extract_tables(soup)
+                    if table_text:
+                        page_content.append(table_text)
+                        page_types.append("table")
+                        found_types.add("table")
+                if not page_content:
+                    page_content.append(extractor.extract_page_text(soup))
 
-                    # ページ本文（テーブル以外）
-                    if not page_content:
-                        page_content.append(extractor.extract_page_text(soup))
+                if page_content:
+                    combined = "\n".join(page_content)
+                    contents.append(f"## ページ: {title}\n{combined}")
+                    pages.append({
+                        "url":   url,
+                        "title": title,
+                        "depth": current_depth,
+                        "types": page_types,
+                    })
 
-                    # リンクを収集してBFSキューに追加
-                    if current_depth < depth:
-                        links = self._collect_links(soup, url, base_domain, doc_types)
-                        for link_url, link_type in links:
-                            if link_url in visited:
-                                continue
-                            # Every queued URL must pass the SSRF policy;
-                            # reject early so we don't waste a Camoufox page.
-                            if not is_url_allowed(link_url, policy):
-                                logger.debug(f"[camoufox] リンク拒否 (policy): {link_url}")
-                                continue
-                            if link_type in ("csv", "pdf", "png") and link_type in doc_types:
-                                # ファイルは直接ダウンロード
-                                file_content = self._download_file(
-                                    link_url, link_type, extractor, policy=policy,
-                                )
-                                if file_content:
-                                    contents.append(file_content)
-                                    found_types.add(link_type)
-                                    visited.add(link_url)
-                            else:
-                                # HTMLページはBFSキューに追加
-                                queue.append((link_url, current_depth + 1))
+                if current_depth < depth:
+                    file_tasks: list = []
+                    for link_url, link_type in self._collect_links(
+                        soup, url, base_domain, doc_types,
+                    ):
+                        if link_url in visited:
+                            continue
+                        if not is_url_allowed(link_url, policy):
+                            logger.debug(
+                                f"[camoufox] リンク拒否 (policy): {link_url}"
+                            )
+                            continue
+                        if link_type in ("csv", "pdf", "png") and link_type in doc_types:
+                            visited.add(link_url)
+                            file_tasks.append(self._download_file_async(
+                                link_url, link_type, extractor, policy,
+                                file_sem, contents, found_types,
+                            ))
+                        else:
+                            next_html.append((link_url, current_depth + 1))
+                    # Fire-and-forget: file downloads run alongside the
+                    # next page wave; await them later in the wave loop.
+                    if file_tasks:
+                        await asyncio.gather(*file_tasks, return_exceptions=True)
 
-                    if page_content:
-                        combined = "\n".join(page_content)
-                        contents.append(f"## ページ: {title}\n{combined}")
-                        pages.append({
-                            "url":   url,
-                            "title": title,
-                            "depth": current_depth,
-                            "types": page_types,
-                        })
+                return next_html
 
-                except Exception as e:
-                    logger.warning(f"[camoufox] エラー ({url}): {e}")
-                    continue
+            # Wave-based BFS. Each wave is processed in parallel
+            # (asyncio.gather), and the union of new HTML children
+            # becomes the next wave. Visited set is updated BEFORE
+            # awaiting visit_one to prevent duplicate scheduling.
+            current_wave: list[tuple[str, int]] = [(start_url, 0)]
+            while current_wave and len(visited) < MAX_PAGES_PER_RUN:
+                wave: list[tuple[str, int]] = []
+                for u, d in current_wave:
+                    if u in visited or len(visited) >= MAX_PAGES_PER_RUN:
+                        continue
+                    visited.add(u)
+                    wave.append((u, d))
+                if not wave:
+                    break
+
+                results = await asyncio.gather(
+                    *(visit_one(u, d) for u, d in wave),
+                    return_exceptions=False,
+                )
+
+                next_wave: list[tuple[str, int]] = []
+                seen_in_wave: set[str] = set()
+                for batch in results:
+                    for nu, nd in batch:
+                        if nu in seen_in_wave or nu in visited:
+                            continue
+                        seen_in_wave.add(nu)
+                        next_wave.append((nu, nd))
+                current_wave = next_wave
 
         return self._build_result(start_url, contents, pages, depth, found_types)
+
+    async def _download_file_async(
+        self, link_url: str, link_type: str,
+        extractor: "DocumentExtractor", policy: FetchPolicy,
+        sem: asyncio.Semaphore,
+        contents: list[str], found_types: set,
+    ) -> None:
+        """Download a CSV/PDF/PNG in a worker thread under the file
+        semaphore. ``_download_file`` is sync (uses ``safe_get`` which
+        wraps ``requests``) so we offload via ``asyncio.to_thread``."""
+        async with sem:
+            try:
+                file_content = await asyncio.to_thread(
+                    self._download_file, link_url, link_type, extractor, policy,
+                )
+            except Exception as e:
+                logger.warning(f"[camoufox] file dl error ({link_url}): {e}")
+                return
+            if file_content:
+                contents.append(file_content)
+                found_types.add(link_type)
 
     # ------------------------------------------------------------------
     # requestsフォールバック実装
