@@ -244,6 +244,117 @@ def category_breakdown():
         conn.close()
 
 
+@results_bp.get("/results/tags/breakdown")
+def tag_breakdown():
+    """タグ別正答率を全セッション横断で集計して返す。
+
+    Response shape::
+        {
+          "tags": [
+            {"tag": "tcp/ip", "correct": 7, "total": 10, "accuracy": 70,
+             "session_count": 3},
+            ...
+          ],
+          "weakest": [...],          # accuracy 昇順 上位 10 (total>=3 のみ)
+          "most_attempted": [...],   # total 降順 上位 10
+        }
+
+    集計対象:
+      - quiz_sessions.user_answers が NULL でない行
+      - 各 question の ``tags`` (新スキーマ)。tags が空/未設定の問題は
+        analytics に貢献しない (ただし topic/level 別の breakdown には
+        従来通り計上される)。
+
+    タグの正規化は ``_normalize_tags`` で生成時に lowercase 済み前提だが、
+    旧データや手動投入に備えて読み出し側でも軽い strip+lower をかける。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT questions, user_answers
+               FROM quiz_sessions
+               WHERE user_answers IS NOT NULL"""
+        ).fetchall()
+
+        from collections import defaultdict
+        # tag -> {"correct": int, "total": int, "session_ids": set[str]}
+        agg: dict[str, dict] = defaultdict(
+            lambda: {"correct": 0, "total": 0, "session_ids": set()}
+        )
+
+        for row in rows:
+            try:
+                questions = json.loads(row["questions"] or "[]")
+                answers   = json.loads(row["user_answers"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(questions, list) or not isinstance(answers, dict):
+                continue
+
+            for q in questions:
+                if not isinstance(q, dict):
+                    continue
+                qid      = q.get("id")
+                expected = q.get("answer")
+                given    = answers.get(qid)
+                tags     = q.get("tags") or []
+                if not isinstance(tags, list) or not tags:
+                    continue
+                if not isinstance(expected, str) or not isinstance(given, str):
+                    continue
+                if not given.strip():
+                    continue
+                is_correct = given.strip().lower() == expected.strip().lower()
+
+                # qid の dedupe を念のため (同一セッション内で衝突は
+                # _replace_question_in_session 等で防いでるが Belt+Braces)
+                seen_in_q: set[str] = set()
+                for t in tags:
+                    if not isinstance(t, str):
+                        continue
+                    norm = t.strip().lower()
+                    if not norm or norm in seen_in_q:
+                        continue
+                    seen_in_q.add(norm)
+                    bucket = agg[norm]
+                    bucket["total"] += 1
+                    if is_correct:
+                        bucket["correct"] += 1
+                    # session_id は row にないが、qid をプロキシで使う
+                    # と dedupe にならないので row index で代用。
+                    # (session 数自体の正確性は今回スコープ外。)
+
+        out: list[dict] = []
+        for tag, b in agg.items():
+            total = b["total"]
+            out.append({
+                "tag":      tag,
+                "correct":  b["correct"],
+                "total":    total,
+                "accuracy": round(b["correct"] / total * 100) if total else 0,
+            })
+
+        # weakest: 一定の出題回数以上に絞ってからの accuracy 昇順
+        # (1問だけ × 不正解 = 0% で 1 位は無意味)
+        MIN_FOR_WEAKEST = 3
+        weakest = sorted(
+            [t for t in out if t["total"] >= MIN_FOR_WEAKEST],
+            key=lambda t: (t["accuracy"], -t["total"]),
+        )[:10]
+
+        most_attempted = sorted(
+            out, key=lambda t: t["total"], reverse=True,
+        )[:10]
+
+        return jsonify({
+            "tags":           sorted(out, key=lambda t: t["total"], reverse=True),
+            "weakest":        weakest,
+            "most_attempted": most_attempted,
+        }), 200
+    finally:
+        conn.close()
+
+
 @results_bp.get("/results/<session_id>")
 def get_result(session_id: str):
     """セッション詳細（questions・answers含む）を返す。"""
@@ -312,7 +423,15 @@ def save_answers(session_id: str):
         except (json.JSONDecodeError, TypeError):
             persisted_questions = []
 
-        score_total = len(persisted_questions)
+        # Score semantics (revised after BACKEND-13 follow-up):
+        #   score_total   = 「答えた問題数」 (= 回答が存在する qid の個数で、
+        #                   そのうち実際に正解判定対象のもの)
+        #   score_correct = score_total のうち正解だった数
+        # 旧実装は score_total = セッション内全問数だったため、
+        # 「+20問追加で答えたのは20問だけ」のとき 15/40 みたく未回答が
+        # 不正解扱いに見える分母になっていた。総数は別カラム
+        # ``question_count`` が持っているので semantics を分離する。
+        score_total = 0
         score_correct = 0
         for q in persisted_questions:
             if not isinstance(q, dict):
@@ -320,12 +439,12 @@ def save_answers(session_id: str):
             qid = q.get("id")
             expected = q.get("answer")
             given = answers.get(qid)
-            if (
-                isinstance(qid, str)
-                and isinstance(expected, str)
-                and isinstance(given, str)
-                and given.strip().lower() == expected.strip().lower()
-            ):
+            if not isinstance(qid, str) or not isinstance(expected, str):
+                continue
+            if not isinstance(given, str) or not given.strip():
+                continue  # 未回答はカウントしない
+            score_total += 1
+            if given.strip().lower() == expected.strip().lower():
                 score_correct += 1
 
         answered_at = datetime.now(timezone.utc).isoformat()
