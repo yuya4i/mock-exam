@@ -202,6 +202,54 @@ MAX_TAG_LEN = 30
 MIN_TAG_LEN = 2
 
 
+# 既存問題への後付けタグ専用の軽量プロンプト。
+# 問題本体・選択肢全文・解説だけを渡して **タグだけ** を JSON で返させる。
+# num_predict=128 で十分。
+TAG_BACKFILL_SYSTEM_PROMPT = """\
+与えられた4択問題から、3〜5 個の短い概念タグを抽出して JSON で返してください。
+
+【tags の付け方】
+- 各 2〜30 文字の **短い概念名** (テーマの構成要素)。
+- 「学習者が後で『この概念だけ復習したい』と検索する単位」を想定。
+- 文/疑問文/長い修飾はNG。記号は `/`, `-` のみ可。
+- 重複は不可、小文字想定。
+
+【出力】
+以下の JSON 1 つだけを出力。前後に説明文を付けない:
+```json
+{"tags": ["概念1", "概念2", "概念3"]}
+```
+"""
+
+TAG_BACKFILL_USER_TEMPLATE = """\
+【問題】
+{question}
+
+【選択肢】
+{choices_block}
+
+【正解】 {correct_choice}
+
+【解説】
+{explanation}
+
+JSON だけを返す。"""
+
+
+def _build_tag_backfill_user_prompt(q: dict) -> str:
+    """Render the user prompt for the tag-only LLM call (backfill)."""
+    choices = q.get("choices") or {}
+    choices_block = "\n".join(
+        f"{k}. {v}" for k, v in choices.items() if isinstance(v, str)
+    )
+    return TAG_BACKFILL_USER_TEMPLATE.format(
+        question=q.get("question", ""),
+        choices_block=choices_block or "(選択肢なし)",
+        correct_choice=q.get("answer", "?"),
+        explanation=(q.get("explanation") or "")[:600],
+    )
+
+
 def _normalize_tags(value) -> list[str]:
     """LLM 出力の ``tags`` フィールドを正規化して、集計に使えるタグ
     リストを返す。
@@ -307,6 +355,52 @@ class QuizService:
                 f"そのまま Ollama に投げる (auto-pull or error 任せ)"
             )
         return requested
+
+    # ------------------------------------------------------------------
+    # 既存問題への タグ後付け (PERF-C / backfill)
+    # ------------------------------------------------------------------
+    def tag_question_only(
+        self, q: dict, model: str,
+        timeout: tuple[int, int] = (5, 30),
+    ) -> list[str]:
+        """Ask Ollama for ONLY the tags of an already-generated question.
+
+        Lightweight prompt (~250 chars + question content), num_predict=128,
+        small ctx. Returns the normalized tags list ([] on parse failure).
+        Caller is responsible for calling _resolve_model first if it
+        wants the auto-fallback behavior; this helper trusts the model
+        name to keep the per-call cost minimal during a 1000-question
+        backfill.
+        """
+        messages = [
+            {"role": "system", "content": TAG_BACKFILL_SYSTEM_PROMPT},
+            {"role": "user",   "content": _build_tag_backfill_user_prompt(q)},
+        ]
+        options = {
+            "temperature": 0.3,   # deterministic-ish for tagging
+            "num_predict": 128,
+            "num_ctx":     2048,  # small prompt, no big context needed
+        }
+        raw = self.ollama.chat(model, messages, options, timeout=timeout)
+        # _parse_single_question is for full questions; we just want
+        # the tags JSON. Inline a minimal parse.
+        text = re.sub(r"```(?:json)?\s*", "", raw)
+        text = text.replace("```", "").strip()
+        start = text.find("{")
+        end   = text.rfind("}")
+        if start == -1 or end <= start:
+            return []
+        try:
+            obj = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            cleaned = re.sub(r"[\x00-\x1f]", " ", text[start:end + 1])
+            try:
+                obj = json.loads(cleaned)
+            except json.JSONDecodeError:
+                return []
+        if not isinstance(obj, dict):
+            return []
+        return _normalize_tags(obj.get("tags"))
 
     # ------------------------------------------------------------------
     # 1問ずつSSEストリーミング生成（メインAPI）

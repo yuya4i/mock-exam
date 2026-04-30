@@ -416,6 +416,27 @@ export const useResultsStore = defineStore('results', () => {
   // 全タグの { tag, correct, total, accuracy }。weakest / most_attempted
   // は ResultsPage の弱点ランキング / 出題回数ランキング表示用。
   const tagBreakdown = ref({ tags: [], weakest: [], most_attempted: [] })
+  // PERF-C: 学習者向けの詳細パーソナルデータ (overview / mastery /
+  // weak_tags_with_examples / recently_missed)。
+  const profile = ref({
+    overview: {
+      total_answered: 0, total_correct: 0, accuracy: 0,
+      active_days: 0, last_active: '',
+    },
+    mastery: {
+      master: [], proficient: [], familiar: [], beginner: [],
+      counts: { master: 0, proficient: 0, familiar: 0, beginner: 0 },
+    },
+    weak_tags_with_examples: [],
+    recently_missed: [],
+  })
+  // PERF-C: backfill 進捗 (SSE 受信中のみ active=true)。
+  const backfill = ref({
+    active: false, current: 0, total: 0,
+    tagged: 0, errors: 0, message: '',
+  })
+  let _backfillAbort = null
+
   const loading    = ref(false)
   const error      = ref(null)
 
@@ -457,11 +478,12 @@ export const useResultsStore = defineStore('results', () => {
     _lastFetchAt = now
     _inflightPromise = (async () => {
       try {
-        const [sessRes, catRes, bdRes, tagRes] = await Promise.all([
+        const [sessRes, catRes, bdRes, tagRes, profRes] = await Promise.all([
           api.get('/results'),
           api.get('/results/categories'),
           api.get('/results/categories/breakdown'),
           api.get('/results/tags/breakdown'),
+          api.get('/results/profile'),
         ])
         sessions.value   = sessRes.data.sessions   || []
         categories.value = catRes.data.categories   || []
@@ -471,6 +493,7 @@ export const useResultsStore = defineStore('results', () => {
           weakest:        tagRes.data.weakest        || [],
           most_attempted: tagRes.data.most_attempted || [],
         }
+        if (profRes.data) profile.value = profRes.data
       } catch (e) {
         error.value = e.message
       } finally {
@@ -479,6 +502,75 @@ export const useResultsStore = defineStore('results', () => {
       }
     })()
     return _inflightPromise
+  }
+
+  // PERF-C: バックフィル — 既存の未タグ問題に LLM でタグ付け。
+  // SSE で進捗ストリームを受け、backfill.value を逐次更新する。
+  // 完了後に fetchResults({force:true}) で集計を再取得する。
+  async function startBackfill(model) {
+    if (backfill.value.active) return  // 多重実行ガード
+    if (!model || !model.trim()) {
+      backfill.value.message = 'モデル名を選択してください'
+      return
+    }
+    _backfillAbort = new AbortController()
+    backfill.value = {
+      active: true, current: 0, total: 0,
+      tagged: 0, errors: 0, message: 'スキャン中...',
+    }
+    const baseUrl = api.defaults.baseURL || '/api'
+    try {
+      await streamSSE(
+        `${baseUrl}/results/tags/backfill`,
+        { method: 'POST', body: { model: model.trim() } },
+        (eventType, data) => {
+          if (eventType === 'start') {
+            backfill.value = {
+              ...backfill.value,
+              total: data.total || 0,
+              message: data.total === 0
+                ? 'タグ付け対象がありません'
+                : `タグ付け中 (model=${data.model})`,
+            }
+          } else if (eventType === 'tagged') {
+            backfill.value = {
+              ...backfill.value,
+              current: data.current,
+              tagged:  backfill.value.tagged + 1,
+            }
+          } else if (eventType === 'error') {
+            backfill.value = {
+              ...backfill.value,
+              current: data.current,
+              errors:  backfill.value.errors + 1,
+            }
+          } else if (eventType === 'done') {
+            backfill.value = {
+              ...backfill.value,
+              active: false,
+              message: `完了: ${data.tagged} 問タグ付け / ${data.errors} エラー`,
+            }
+          }
+        },
+        _backfillAbort.signal,
+      )
+    } catch (e) {
+      backfill.value = {
+        ...backfill.value,
+        active: false,
+        message: `中断: ${e.message || e}`,
+      }
+    } finally {
+      _backfillAbort = null
+      // 集計を更新
+      try { await fetchResults({ force: true }) } catch (_) {}
+    }
+  }
+
+  function cancelBackfill() {
+    if (_backfillAbort) {
+      try { _backfillAbort.abort() } catch (_) {}
+    }
   }
 
   async function getSession(sessionId) {
@@ -501,9 +593,12 @@ export const useResultsStore = defineStore('results', () => {
   }
 
   return {
-    sessions, categories, breakdown, tagBreakdown, loading, error,
+    sessions, categories, breakdown, tagBreakdown,
+    profile, backfill,
+    loading, error,
     totalSessions, averageScore, totalQuestions,
     fetchResults, getSession, saveAnswers, deleteSession,
+    startBackfill, cancelBackfill,
   }
 })
 

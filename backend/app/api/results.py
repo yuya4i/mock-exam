@@ -3,19 +3,25 @@ Results API Blueprint
 クイズセッション結果のCRUDエンドポイント。
 """
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response, stream_with_context
 from app.database import get_connection
 from app.api._validation import parse_int  # query-param int parsing
 from app.api._schemas import (
     AnswersRequest,
     ValidationError,
     humanize_first_error,
+    is_valid_model_name,
     is_valid_session_id,
 )
+from app.services.quiz_service import QuizService
+
+logger = logging.getLogger(__name__)
+_quiz_service = QuizService()
 
 
 def _bad_session_id_response():
@@ -353,6 +359,397 @@ def tag_breakdown():
         }), 200
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------
+# 既存問題への タグ後付け (PERF-C / backfill SSE)
+# --------------------------------------------------------------------------
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@results_bp.post("/results/tags/backfill")
+def backfill_tags_stream():
+    """既存セッションの未タグ問題に対して LLM で 1 問ずつタグを付与し、
+    進捗を SSE でストリームする。
+
+    Body (JSON, optional)::
+        {"model": "qwen2.5:7b", "limit": 100}
+
+    Stream events::
+        event: start  data: {"total": N}                      # 未タグ問題数
+        event: tagged data: {"current":i, "total":N,
+                             "session_id":"...", "qid":"...",
+                             "tags": [...]}                    # 1 問完了毎
+        event: error  data: {"current":i, "total":N,
+                             "session_id":"...", "qid":"...",
+                             "error":"..."}                    # 失敗 (続行)
+        event: done   data: {"tagged":n, "errors":k}
+
+    冪等性: tags が既に非空の問題は touch しない。途中で接続が切れても
+    保存済 tags は失われない (1 セッション完了毎に UPDATE commit)。
+    """
+    body = request.get_json(silent=True) or {}
+    model = (body.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "model は必須です。"}), 400
+    if not is_valid_model_name(model):
+        return jsonify({"error": "model 名の形式が不正です。"}), 400
+    limit_raw = body.get("limit")
+    limit: int | None = None
+    if limit_raw is not None:
+        try:
+            limit = max(1, int(limit_raw))
+        except (TypeError, ValueError):
+            return jsonify({"error": "limit は整数で指定してください。"}), 400
+
+    # 1 段目: 全セッションを read してタグ付け対象 (session_id, qidx, q)
+    # を列挙。並べ方は新しいセッション順 (生成順序逆) — 最近の方が
+    # ユーザーの記憶に近く、進捗を見せたとき "覚えのある問題から順に
+    # タグ付けされる" 体験になる。
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT session_id, questions
+               FROM quiz_sessions
+               WHERE questions IS NOT NULL AND questions != '[]'
+               ORDER BY datetime(generated_at) DESC"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    targets: list[tuple[str, int, dict]] = []
+    for row in rows:
+        sid = row["session_id"]
+        try:
+            qs = json.loads(row["questions"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(qs, list):
+            continue
+        for idx, q in enumerate(qs):
+            if not isinstance(q, dict):
+                continue
+            existing = q.get("tags")
+            if isinstance(existing, list) and len(existing) > 0:
+                continue
+            targets.append((sid, idx, q))
+            if limit is not None and len(targets) >= limit:
+                break
+        if limit is not None and len(targets) >= limit:
+            break
+
+    total = len(targets)
+
+    # Pre-resolve model once (fail fast if Ollama unreachable).
+    try:
+        resolved_model = _quiz_service._resolve_model(model)
+    except ConnectionError as e:
+        return jsonify({"error": str(e)}), 503
+
+    def event_stream():
+        yield _sse("start", {"total": total, "model": resolved_model})
+        if total == 0:
+            yield _sse("done", {"tagged": 0, "errors": 0, "skipped": 0})
+            return
+
+        # session_id → list of (qidx, new_tags) accumulated for batched
+        # UPDATE per session (one DB write per session, not per question).
+        from collections import defaultdict
+        per_session: dict[str, list[tuple[int, list[str]]]] = defaultdict(list)
+
+        tagged_n = 0
+        error_n  = 0
+
+        def _flush_session(sid: str):
+            """Apply accumulated tags for one session in a single
+            BEGIN IMMEDIATE / UPDATE."""
+            patches = per_session.pop(sid, [])
+            if not patches:
+                return
+            from app.database import get_connection as _gc
+            conn2 = _gc()
+            try:
+                conn2.execute("BEGIN IMMEDIATE")
+                row = conn2.execute(
+                    "SELECT questions FROM quiz_sessions WHERE session_id = ?",
+                    (sid,),
+                ).fetchone()
+                if row is None:
+                    conn2.rollback()
+                    return
+                try:
+                    qs = json.loads(row["questions"] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    conn2.rollback()
+                    return
+                if not isinstance(qs, list):
+                    conn2.rollback()
+                    return
+                for idx, new_tags in patches:
+                    if 0 <= idx < len(qs) and isinstance(qs[idx], dict):
+                        # Only set if still empty (concurrent edit safety).
+                        existing = qs[idx].get("tags")
+                        if not isinstance(existing, list) or len(existing) == 0:
+                            qs[idx]["tags"] = new_tags
+                conn2.execute(
+                    "UPDATE quiz_sessions SET questions = ? WHERE session_id = ?",
+                    (json.dumps(qs, ensure_ascii=False), sid),
+                )
+                conn2.commit()
+            except Exception as e:
+                logger.warning(f"backfill flush error sid={sid}: {e}")
+                try: conn2.rollback()
+                except Exception: pass
+            finally:
+                conn2.close()
+
+        last_sid: str | None = None
+        for i, (sid, qidx, q) in enumerate(targets, start=1):
+            # Flush previous session group before moving on
+            if last_sid is not None and sid != last_sid:
+                _flush_session(last_sid)
+            last_sid = sid
+
+            try:
+                new_tags = _quiz_service.tag_question_only(q, resolved_model)
+                if not new_tags:
+                    error_n += 1
+                    yield _sse("error", {
+                        "current": i, "total": total,
+                        "session_id": sid, "qid": q.get("id"),
+                        "error": "LLM がタグを返しませんでした",
+                    })
+                    continue
+                per_session[sid].append((qidx, new_tags))
+                tagged_n += 1
+                yield _sse("tagged", {
+                    "current": i, "total": total,
+                    "session_id": sid, "qid": q.get("id"),
+                    "tags": new_tags,
+                })
+            except Exception as e:
+                error_n += 1
+                logger.warning(f"backfill tag error sid={sid} q={q.get('id')}: {e}")
+                yield _sse("error", {
+                    "current": i, "total": total,
+                    "session_id": sid, "qid": q.get("id"),
+                    "error": str(e)[:200],
+                })
+
+        if last_sid is not None:
+            _flush_session(last_sid)
+
+        yield _sse("done", {
+            "tagged": tagged_n,
+            "errors": error_n,
+            "skipped": 0,
+            "total": total,
+        })
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --------------------------------------------------------------------------
+# 個人プロファイル (PERF-C: 学習者向けの詳細パーソナルデータ)
+# --------------------------------------------------------------------------
+# マスタリーレベルの閾値 (CEFR 風の 4 段階)
+MASTERY_TIERS = (
+    ("master",     90),
+    ("proficient", 70),
+    ("familiar",   50),
+    ("beginner",    0),
+)
+# 弱点タグの「例題」表示上限 (1 タグあたり)
+WEAK_TAG_EXAMPLES = 3
+# 「最近間違えた問題」リストの上限
+MISSED_LIMIT = 20
+# 弱点タグとして扱うための最低出題回数 (n=1 の noise 除外)
+WEAK_TAG_MIN_ATTEMPTS = 2
+
+
+def _classify_mastery(accuracy: int) -> str:
+    for tier, threshold in MASTERY_TIERS:
+        if accuracy >= threshold:
+            return tier
+    return "beginner"
+
+
+@results_bp.get("/results/profile")
+def get_profile():
+    """学習者の総合パーソナルデータを返す。
+
+    Sections:
+      - overview: 全回答数 / 全正答数 / 全体正答率 / 学習日数 / 最終活動日
+      - mastery:  タグ別の習熟度 (4段階) + 各段階のタグ数
+      - weak_tags_with_examples: 弱点タグ + 直近誤答例 (3件まで)
+      - recently_missed: 最近間違えた問題 top 20
+
+    すべて answered = user_answers が NULL でない問題が対象。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT session_id, source_title, generated_at, answered_at,
+                      questions, user_answers
+               FROM quiz_sessions
+               WHERE user_answers IS NOT NULL"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # ---- 集計 ----
+    from collections import defaultdict
+    total_answered = 0
+    total_correct  = 0
+    active_days: set[str] = set()
+    last_active: str | None = None
+
+    # tag → {"correct": int, "total": int, "wrong_examples": list}
+    tag_stats: dict[str, dict] = defaultdict(
+        lambda: {"correct": 0, "total": 0, "wrong_examples": []}
+    )
+    # answered+wrong all questions, sorted later by recency
+    missed: list[dict] = []
+
+    for row in rows:
+        sid          = row["session_id"]
+        source_title = row["source_title"] or ""
+        answered_at  = row["answered_at"] or ""
+        if answered_at:
+            day = answered_at[:10]  # ISO8601 date prefix
+            active_days.add(day)
+            if last_active is None or answered_at > last_active:
+                last_active = answered_at
+
+        try:
+            qs = json.loads(row["questions"] or "[]")
+            ans = json.loads(row["user_answers"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(qs, list) or not isinstance(ans, dict):
+            continue
+
+        for q in qs:
+            if not isinstance(q, dict):
+                continue
+            qid      = q.get("id")
+            expected = q.get("answer")
+            given    = ans.get(qid)
+            if not isinstance(qid, str) or not isinstance(expected, str):
+                continue
+            if not isinstance(given, str) or not given.strip():
+                continue
+            total_answered += 1
+            is_correct = given.strip().lower() == expected.strip().lower()
+            if is_correct:
+                total_correct += 1
+
+            tags = q.get("tags") or []
+            for t in tags:
+                if not isinstance(t, str):
+                    continue
+                norm = t.strip().lower()
+                if not norm:
+                    continue
+                bucket = tag_stats[norm]
+                bucket["total"] += 1
+                if is_correct:
+                    bucket["correct"] += 1
+                else:
+                    if len(bucket["wrong_examples"]) < WEAK_TAG_EXAMPLES:
+                        bucket["wrong_examples"].append({
+                            "session_id":  sid,
+                            "source_title": source_title,
+                            "qid":         qid,
+                            "question":    q.get("question", "")[:200],
+                            "user_answer": given,
+                            "correct":     expected,
+                            "answered_at": answered_at,
+                        })
+
+            if not is_correct:
+                missed.append({
+                    "session_id":   sid,
+                    "source_title": source_title,
+                    "qid":          qid,
+                    "question":     q.get("question", "")[:200],
+                    "user_answer":  given,
+                    "correct":      expected,
+                    "tags":         [t.strip().lower() for t in tags
+                                     if isinstance(t, str) and t.strip()],
+                    "answered_at":  answered_at,
+                })
+
+    # ---- mastery 段階分け ----
+    tier_buckets: dict[str, list[dict]] = {
+        "master": [], "proficient": [], "familiar": [], "beginner": [],
+    }
+    for tag, b in tag_stats.items():
+        if b["total"] == 0:
+            continue
+        accuracy = round(b["correct"] / b["total"] * 100)
+        tier = _classify_mastery(accuracy)
+        tier_buckets[tier].append({
+            "tag":      tag,
+            "total":    b["total"],
+            "correct":  b["correct"],
+            "accuracy": accuracy,
+        })
+    # 各 tier 内は出題回数降順で並べる (重要なタグから見せる)
+    for tier in tier_buckets:
+        tier_buckets[tier].sort(
+            key=lambda t: (-t["total"], -t["accuracy"], t["tag"])
+        )
+    mastery_counts = {tier: len(arr) for tier, arr in tier_buckets.items()}
+
+    # ---- weak_tags_with_examples ----
+    weak_with_examples = []
+    for tag, b in tag_stats.items():
+        if b["total"] < WEAK_TAG_MIN_ATTEMPTS:
+            continue
+        accuracy = round(b["correct"] / b["total"] * 100)
+        if accuracy >= 70:  # マスタリーで Familiar 未満のみ
+            continue
+        weak_with_examples.append({
+            "tag":            tag,
+            "total":          b["total"],
+            "correct":        b["correct"],
+            "accuracy":       accuracy,
+            "wrong_examples": b["wrong_examples"],
+        })
+    weak_with_examples.sort(key=lambda t: (t["accuracy"], -t["total"]))
+    weak_with_examples = weak_with_examples[:10]
+
+    # ---- recently missed (answered_at 降順 top N) ----
+    missed.sort(key=lambda m: m["answered_at"] or "", reverse=True)
+    recently_missed = missed[:MISSED_LIMIT]
+
+    return jsonify({
+        "overview": {
+            "total_answered": total_answered,
+            "total_correct":  total_correct,
+            "accuracy":       (
+                round(total_correct / total_answered * 100)
+                if total_answered else 0
+            ),
+            "active_days":    len(active_days),
+            "last_active":    last_active or "",
+        },
+        "mastery": {
+            **tier_buckets,
+            "counts": mastery_counts,
+        },
+        "weak_tags_with_examples": weak_with_examples,
+        "recently_missed":         recently_missed,
+    }), 200
 
 
 @results_bp.get("/results/<session_id>")
