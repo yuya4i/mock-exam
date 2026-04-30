@@ -30,6 +30,185 @@
 
     <!-- メインコンテンツ -->
     <template v-else>
+      <!-- ============================================================ -->
+      <!-- マイデータ (PERF-C: 詳細パーソナルデータ) -->
+      <!-- ============================================================ -->
+      <div class="card my-data-panel">
+        <div class="my-data-header" @click="myDataOpen = !myDataOpen">
+          <span class="my-data-icon">👤</span>
+          <h3 class="card-title" style="margin:0">マイデータ</h3>
+          <span class="my-data-sub">学習者プロファイル / 弱点分析 / 履歴</span>
+          <span class="expand-icon" style="margin-left:auto">{{ myDataOpen ? '▼' : '▶' }}</span>
+        </div>
+
+        <div v-if="myDataOpen" class="my-data-body">
+          <!-- 1. Overview -->
+          <div class="md-overview">
+            <div class="md-stat">
+              <div class="md-stat-value">{{ resultsStore.profile.overview.total_answered }}</div>
+              <div class="md-stat-label">回答済み</div>
+            </div>
+            <div class="md-stat">
+              <div class="md-stat-value" :class="scoreColor(resultsStore.profile.overview.accuracy)">
+                {{ resultsStore.profile.overview.accuracy }}%
+              </div>
+              <div class="md-stat-label">全体正答率</div>
+            </div>
+            <div class="md-stat">
+              <div class="md-stat-value">{{ resultsStore.profile.overview.total_correct }}</div>
+              <div class="md-stat-label">正答数</div>
+            </div>
+            <div class="md-stat">
+              <div class="md-stat-value">{{ resultsStore.profile.overview.active_days }}</div>
+              <div class="md-stat-label">学習日数</div>
+            </div>
+            <div class="md-stat">
+              <div class="md-stat-value" style="font-size:14px">
+                {{ formatDate(resultsStore.profile.overview.last_active) || '—' }}
+              </div>
+              <div class="md-stat-label">最終活動</div>
+            </div>
+          </div>
+
+          <!-- 2. Mastery 4 段階 -->
+          <div class="md-mastery">
+            <div class="md-section-title">タグマスタリー</div>
+            <div class="md-mastery-grid">
+              <div
+                v-for="tier in masteryTiers"
+                :key="tier.key"
+                class="md-tier"
+                :class="tier.cls"
+              >
+                <div class="md-tier-head">
+                  <span class="md-tier-name">{{ tier.label }}</span>
+                  <span class="md-tier-count">
+                    {{ resultsStore.profile.mastery.counts[tier.key] }}
+                  </span>
+                </div>
+                <div class="md-tier-rule">{{ tier.rule }}</div>
+                <div class="md-tier-tags">
+                  <span
+                    v-for="t in resultsStore.profile.mastery[tier.key].slice(0, 8)"
+                    :key="t.tag"
+                    class="md-tag-chip"
+                    :title="`${t.correct}/${t.total} (${t.accuracy}%)`"
+                  >{{ t.tag }} <small>{{ t.accuracy }}%</small></span>
+                  <span
+                    v-if="resultsStore.profile.mastery[tier.key].length > 8"
+                    class="md-tag-more"
+                  >+{{ resultsStore.profile.mastery[tier.key].length - 8 }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. 弱点タグ + 例題 -->
+          <div
+            v-if="resultsStore.profile.weak_tags_with_examples.length > 0"
+            class="md-weak"
+          >
+            <div class="md-section-title">弱点タグ ({{ resultsStore.profile.weak_tags_with_examples.length }})</div>
+            <div class="md-weak-list">
+              <div
+                v-for="w in resultsStore.profile.weak_tags_with_examples"
+                :key="w.tag"
+                class="md-weak-item"
+              >
+                <div class="md-weak-head" @click="toggleWeak(w.tag)">
+                  <span class="md-weak-tag">{{ w.tag }}</span>
+                  <span class="md-weak-score" :class="scoreColor(w.accuracy)">
+                    {{ w.correct }}/{{ w.total }} ({{ w.accuracy }}%)
+                  </span>
+                  <span class="expand-icon">{{ openWeak[w.tag] ? '▼' : '▶' }}</span>
+                </div>
+                <div v-if="openWeak[w.tag]" class="md-weak-examples">
+                  <div
+                    v-for="ex in w.wrong_examples"
+                    :key="ex.qid + ex.session_id"
+                    class="md-weak-ex"
+                  >
+                    <div class="md-weak-ex-question">{{ ex.question }}</div>
+                    <div class="md-weak-ex-meta">
+                      <span class="badge badge-k4">あなた: {{ ex.user_answer }}</span>
+                      <span class="badge badge-k2">正解: {{ ex.correct }}</span>
+                      <span class="md-weak-ex-src">{{ ex.source_title }} · {{ formatDate(ex.answered_at) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. 最近間違えた問題 -->
+          <div
+            v-if="resultsStore.profile.recently_missed.length > 0"
+            class="md-missed"
+          >
+            <div class="md-section-title">最近間違えた問題 ({{ resultsStore.profile.recently_missed.length }})</div>
+            <div class="md-missed-list">
+              <div
+                v-for="m in resultsStore.profile.recently_missed"
+                :key="m.session_id + m.qid"
+                class="md-missed-item"
+              >
+                <div class="md-missed-q">{{ m.question }}</div>
+                <div class="md-missed-meta">
+                  <span class="badge badge-k4">あなた: {{ m.user_answer }}</span>
+                  <span class="badge badge-k2">正解: {{ m.correct }}</span>
+                  <span
+                    v-for="t in m.tags.slice(0, 4)"
+                    :key="t"
+                    class="md-tag-chip md-tag-chip-sm"
+                  >{{ t }}</span>
+                  <span class="md-missed-when">{{ formatDate(m.answered_at) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5. Backfill (既存問題のタグ付け) -->
+          <div class="md-backfill">
+            <div class="md-section-title">既存問題のタグ付け</div>
+            <p class="md-backfill-help">
+              タグ未付与の過去問題に LLM でタグを付ける。完了後は弱点分析が更新される。
+            </p>
+            <div class="md-backfill-controls">
+              <select v-model="backfillModel" class="form-select" style="max-width:240px">
+                <option value="" disabled>モデル選択...</option>
+                <option v-for="m in modelsStore.models" :key="m.name" :value="m.name">
+                  {{ m.name }}
+                </option>
+              </select>
+              <button
+                v-if="!resultsStore.backfill.active"
+                class="btn btn-primary"
+                :disabled="!backfillModel"
+                @click="resultsStore.startBackfill(backfillModel)"
+              >タグ付け実行</button>
+              <button
+                v-else
+                class="btn btn-danger"
+                @click="resultsStore.cancelBackfill()"
+              >中断</button>
+            </div>
+            <div v-if="resultsStore.backfill.active || resultsStore.backfill.message" class="md-backfill-status">
+              <div class="md-backfill-bar-wrap">
+                <div
+                  class="md-backfill-bar"
+                  :style="{ width: backfillPct + '%' }"
+                ></div>
+              </div>
+              <div class="md-backfill-text">
+                {{ resultsStore.backfill.current }}/{{ resultsStore.backfill.total }}
+                ({{ backfillPct }}%) · 成功 {{ resultsStore.backfill.tagged }} · 失敗 {{ resultsStore.backfill.errors }}
+                — {{ resultsStore.backfill.message }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 統計サマリー -->
       <div class="stats-row">
         <div class="stat-card card">
@@ -302,7 +481,7 @@
 
 <script setup>
 import { ref, computed, reactive, onMounted } from 'vue'
-import { useResultsStore } from '@/stores'
+import { useResultsStore, useModelsStore } from '@/stores'
 import QuestionCard from '@/components/QuestionCard.vue'
 import { Radar } from 'vue-chartjs'
 import {
@@ -318,6 +497,7 @@ import {
 ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend)
 
 const resultsStore = useResultsStore()
+const modelsStore  = useModelsStore()
 
 const filterCategory   = ref('')
 const expandedSessions = reactive({})
@@ -325,6 +505,28 @@ const expandedCats     = reactive({})
 const sessionDetails   = reactive({})
 const deleteTarget     = ref(null)
 const deleting         = ref(false)
+
+// PERF-C: マイデータ section state
+const myDataOpen     = ref(true)        // デフォルト展開
+const openWeak       = reactive({})     // 弱点タグ毎の例題開閉
+const backfillModel  = ref('')
+
+const masteryTiers = [
+  { key: 'master',     label: 'Master',     rule: '90%+',     cls: 'tier-master'     },
+  { key: 'proficient', label: 'Proficient', rule: '70–89%',   cls: 'tier-proficient' },
+  { key: 'familiar',   label: 'Familiar',   rule: '50–69%',   cls: 'tier-familiar'   },
+  { key: 'beginner',   label: 'Beginner',   rule: '0–49%',    cls: 'tier-beginner'   },
+]
+
+const backfillPct = computed(() => {
+  const t = resultsStore.backfill.total
+  if (!t) return 0
+  return Math.round((resultsStore.backfill.current / t) * 100)
+})
+
+function toggleWeak(tag) {
+  openWeak[tag] = !openWeak[tag]
+}
 
 // 弱点閾値（正答率がこれ未満なら強化推奨）
 const WEAK_THRESHOLD     = 60
@@ -597,6 +799,10 @@ onMounted(() => {
   // Force-fetch when entering the analytics page so the user sees a
   // fresh snapshot even if the per-save throttle is "still cooling".
   resultsStore.fetchResults({ force: true })
+  // PERF-C: backfill ボタン用にモデル一覧を取得 (キャッシュ済みなら即返る)
+  if (!modelsStore.models || modelsStore.models.length === 0) {
+    modelsStore.fetchModels().catch(() => {})
+  }
 })
 </script>
 
@@ -797,6 +1003,145 @@ onMounted(() => {
 }
 
 /* トピック別バー */
+/* ============================================================
+ * PERF-C: マイデータ パネル
+ * ============================================================ */
+.my-data-panel { padding: 16px; }
+.my-data-header {
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer; user-select: none;
+}
+.my-data-icon { font-size: 22px; }
+.my-data-sub  { font-size: 11px; color: var(--text-muted); }
+.my-data-body {
+  margin-top: 14px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+.md-section-title {
+  font-size: 13px; font-weight: 700; color: var(--text-primary);
+  margin-bottom: 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Overview */
+.md-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.md-stat {
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  text-align: center;
+}
+.md-stat-value { font-size: 20px; font-weight: 700; color: var(--accent-hover); }
+.md-stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+/* Mastery */
+.md-mastery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.md-tier {
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.md-tier.tier-master     { border-left-color: var(--success); }
+.md-tier.tier-proficient { border-left-color: #06b6d4; }
+.md-tier.tier-familiar   { border-left-color: var(--warning); }
+.md-tier.tier-beginner   { border-left-color: var(--danger); }
+.md-tier-head { display: flex; justify-content: space-between; align-items: baseline; }
+.md-tier-name  { font-weight: 700; font-size: 13px; }
+.md-tier-count { font-weight: 700; font-size: 18px; color: var(--accent-hover); }
+.md-tier-rule  { font-size: 11px; color: var(--text-muted); margin: 2px 0 8px; }
+.md-tier-tags  { display: flex; flex-wrap: wrap; gap: 4px; }
+.md-tag-chip {
+  display: inline-flex; gap: 4px; align-items: baseline;
+  background: rgba(99,102,241,0.10);
+  border: 1px solid rgba(99,102,241,0.25);
+  color: var(--text-primary);
+  padding: 2px 8px; border-radius: 12px; font-size: 11px;
+}
+.md-tag-chip small { color: var(--text-muted); }
+.md-tag-chip-sm    { font-size: 10px; padding: 1px 6px; }
+.md-tag-more       { font-size: 11px; color: var(--text-muted); align-self: center; }
+
+/* Weak tags + examples */
+.md-weak-list { display: flex; flex-direction: column; gap: 6px; }
+.md-weak-item {
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.md-weak-head {
+  display: flex; gap: 10px; align-items: center;
+  padding: 8px 12px; cursor: pointer;
+}
+.md-weak-tag   { flex: 1; font-weight: 600; font-size: 13px; }
+.md-weak-score { font-size: 12px; font-weight: 700; }
+.md-weak-examples {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.md-weak-ex {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.md-weak-ex-question { font-size: 12px; line-height: 1.5; color: var(--text-primary); }
+.md-weak-ex-meta {
+  margin-top: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 11px;
+}
+.md-weak-ex-src { color: var(--text-muted); margin-left: auto; }
+
+/* Recently missed */
+.md-missed-list { display: flex; flex-direction: column; gap: 6px; }
+.md-missed-item {
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.md-missed-q    { font-size: 12px; line-height: 1.5; }
+.md-missed-meta {
+  margin-top: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 11px;
+}
+.md-missed-when { color: var(--text-muted); margin-left: auto; }
+
+/* Backfill */
+.md-backfill-help {
+  font-size: 11px; color: var(--text-muted); margin: 4px 0 8px;
+}
+.md-backfill-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.md-backfill-status { margin-top: 10px; }
+.md-backfill-bar-wrap {
+  height: 8px; background: var(--bg-primary);
+  border-radius: 4px; overflow: hidden;
+  border: 1px solid var(--border);
+}
+.md-backfill-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  transition: width 0.2s ease;
+}
+.md-backfill-text {
+  font-size: 11px; color: var(--text-muted); margin-top: 4px;
+}
+
 /* PERF-C: タグ別正答率セクション */
 .tag-section { display: flex; flex-direction: column; gap: 12px; }
 .tag-grid {
