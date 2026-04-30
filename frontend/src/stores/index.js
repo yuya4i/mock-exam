@@ -412,6 +412,10 @@ export const useResultsStore = defineStore('results', () => {
   const sessions   = ref([])
   const categories = ref([])
   const breakdown  = ref([])
+  // PERF-C: タグ別正答率 (cross-session 集計)。tagBreakdown.tags は
+  // 全タグの { tag, correct, total, accuracy }。weakest / most_attempted
+  // は ResultsPage の弱点ランキング / 出題回数ランキング表示用。
+  const tagBreakdown = ref({ tags: [], weakest: [], most_attempted: [] })
   const loading    = ref(false)
   const error      = ref(null)
 
@@ -453,14 +457,20 @@ export const useResultsStore = defineStore('results', () => {
     _lastFetchAt = now
     _inflightPromise = (async () => {
       try {
-        const [sessRes, catRes, bdRes] = await Promise.all([
+        const [sessRes, catRes, bdRes, tagRes] = await Promise.all([
           api.get('/results'),
           api.get('/results/categories'),
           api.get('/results/categories/breakdown'),
+          api.get('/results/tags/breakdown'),
         ])
         sessions.value   = sessRes.data.sessions   || []
         categories.value = catRes.data.categories   || []
         breakdown.value  = bdRes.data.categories   || []
+        tagBreakdown.value = {
+          tags:           tagRes.data.tags           || [],
+          weakest:        tagRes.data.weakest        || [],
+          most_attempted: tagRes.data.most_attempted || [],
+        }
       } catch (e) {
         error.value = e.message
       } finally {
@@ -491,7 +501,7 @@ export const useResultsStore = defineStore('results', () => {
   }
 
   return {
-    sessions, categories, breakdown, loading, error,
+    sessions, categories, breakdown, tagBreakdown, loading, error,
     totalSessions, averageScore, totalQuestions,
     fetchResults, getSession, saveAnswers, deleteSession,
   }

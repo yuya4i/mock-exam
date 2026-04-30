@@ -148,6 +148,70 @@
         </div>
       </div>
 
+      <!-- ============================================================ -->
+      <!-- タグ別正答率 (PERF-C: 実運用性重視の弱点ランキング) -->
+      <!-- ============================================================ -->
+      <div
+        v-if="resultsStore.tagBreakdown.tags.length > 0"
+        class="tag-section"
+      >
+        <h3 class="sub-title">タグ別正答率 (横断分析)</h3>
+        <div class="tag-grid">
+          <!-- 弱点ランキング -->
+          <div class="card tag-card">
+            <div class="tag-card-header">
+              <span class="tag-card-title">弱点ランキング</span>
+              <span class="tag-card-sub">出題3回以上、正答率昇順</span>
+            </div>
+            <div v-if="resultsStore.tagBreakdown.weakest.length === 0" class="tag-card-empty">
+              データ不足 (各タグ 3 回以上の出題が必要)
+            </div>
+            <div v-else class="topic-bars">
+              <div
+                v-for="t in resultsStore.tagBreakdown.weakest"
+                :key="'w-' + t.tag"
+                class="topic-bar"
+              >
+                <span class="topic-bar-label" :title="t.tag">{{ t.tag }}</span>
+                <div class="topic-bar-track">
+                  <div
+                    class="topic-bar-fill"
+                    :class="scoreColor(t.accuracy)"
+                    :style="{ width: `${t.accuracy}%` }"
+                  ></div>
+                </div>
+                <span class="topic-bar-score">{{ t.correct }}/{{ t.total }} ({{ t.accuracy }}%)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 出題回数ランキング -->
+          <div class="card tag-card">
+            <div class="tag-card-header">
+              <span class="tag-card-title">出題回数ランキング</span>
+              <span class="tag-card-sub">よく出るタグ TOP10</span>
+            </div>
+            <div class="topic-bars">
+              <div
+                v-for="t in resultsStore.tagBreakdown.most_attempted"
+                :key="'m-' + t.tag"
+                class="topic-bar"
+              >
+                <span class="topic-bar-label" :title="t.tag">{{ t.tag }}</span>
+                <div class="topic-bar-track">
+                  <div
+                    class="topic-bar-fill"
+                    :class="scoreColor(t.accuracy)"
+                    :style="{ width: `${t.accuracy}%` }"
+                  ></div>
+                </div>
+                <span class="topic-bar-score">{{ t.correct }}/{{ t.total }} ({{ t.accuracy }}%)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- セッション一覧 -->
       <h3 class="sub-title">正誤履歴</h3>
 
@@ -733,6 +797,31 @@ onMounted(() => {
 }
 
 /* トピック別バー */
+/* PERF-C: タグ別正答率セクション */
+.tag-section { display: flex; flex-direction: column; gap: 12px; }
+.tag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+}
+.tag-card { padding: 16px; }
+.tag-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.tag-card-title { font-weight: 700; font-size: 14px; color: var(--text-primary); }
+.tag-card-sub   { font-size: 11px; color: var(--text-muted); }
+.tag-card-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 24px 8px;
+  text-align: center;
+}
+
 .topic-bars { display: flex; flex-direction: column; gap: 6px; }
 .topic-bar {
   display: flex;

@@ -98,6 +98,7 @@ SYSTEM_PROMPT = """\
   "id": "Q001",
   "level": "K2",
   "topic": "テーマ名",
+  "tags": ["短い概念名1", "短い概念名2", "短い概念名3"],
   "question": "問題文",
   "diagram": "graph TD; A-->B",
   "choices": {"a": "...", "b": "...", "c": "...", "d": "..."},
@@ -106,6 +107,12 @@ SYSTEM_PROMPT = """\
   "source_hint": "資料の章・セクション名"
 }
 ```
+
+【tags の付け方】
+- 3〜5 個。各 2〜20 文字の **短い概念名** (テーマの構成要素)。
+- 「学習者が後で『この概念だけ復習したい』と検索する単位」を想定。
+- 例: TCP のハンドシェイク問なら ["TCP/IP", "3-way handshake", "コネクション確立"]。
+- 文/疑問文/長い修飾はNG。記号は `/`, `-` のみ可。
 """
 
 # ======================================================================
@@ -182,6 +189,47 @@ def _is_valid_question_shape(q) -> bool:
     if answer.strip().lower() not in keys_lower:
         return False
     return True
+
+
+# ======================================================================
+# タグ normalization (PERF-C: tag-based analytics)
+# ======================================================================
+# 1問あたりのタグ上限。LLM が大量に出してもここで切る (集計時のノイズ抑制)。
+MAX_TAGS_PER_QUESTION = 5
+# 個別タグの長さ上限 (chars)。これより長いものは「文/説明」として弾く。
+MAX_TAG_LEN = 30
+# 無意味な短さ。1 文字タグは集計しても意味がない。
+MIN_TAG_LEN = 2
+
+
+def _normalize_tags(value) -> list[str]:
+    """LLM 出力の ``tags`` フィールドを正規化して、集計に使えるタグ
+    リストを返す。
+
+    - None / 非リスト → ``[]``
+    - 各要素を strip → lower (大小文字差を吸収) → 連続空白圧縮
+    - MIN_TAG_LEN 未満 / MAX_TAG_LEN 超は drop
+    - 重複は順序保持で除去
+    - 上位 MAX_TAGS_PER_QUESTION 個まで
+
+    集計の信頼性は「同じ概念は同じ表記」に依存するので、ここで愚直に
+    lowercase + whitespace collapse する。日本語タグは小文字化しても無害。
+    """
+    if not isinstance(value, list):
+        return []
+    seen: dict[str, None] = {}
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        norm = re.sub(r"\s+", " ", item.strip()).lower()
+        if not (MIN_TAG_LEN <= len(norm) <= MAX_TAG_LEN):
+            continue
+        if norm in seen:
+            continue
+        seen[norm] = None
+        if len(seen) >= MAX_TAGS_PER_QUESTION:
+            break
+    return list(seen.keys())
 
 
 def _normalize_question_text(text: str) -> str:
@@ -693,6 +741,7 @@ class QuizService:
             "id":          q.get("id", f"Q{index + 1:03d}"),
             "level":       q.get("level", "K2"),
             "topic":       q.get("topic", "不明"),
+            "tags":        _normalize_tags(q.get("tags")),
             "question":    q.get("question", ""),
             "diagram":     self._sanitize_diagram(q.get("diagram", "")),
             "choices":     q.get("choices", {}),

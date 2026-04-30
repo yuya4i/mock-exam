@@ -99,6 +99,38 @@ def test_score_zero_when_all_wrong(client):
     assert _read_score("sess-score-001") == (0, 3)
 
 
+def test_partial_answers_score_total_is_answered_not_session_total(client):
+    """Regression for the analytics-tab "unnatural number" bug.
+
+    User answered only 2 of the 3 seeded questions. score_total must
+    reflect "how many you actually attempted" (= 2), not "questions in
+    the session" (= 3). Otherwise the displayed accuracy looks like
+    "66% of the session" when it's really "100% of attempted".
+    The session's total question count is preserved on
+    quiz_sessions.question_count (separate column)."""
+    _seed_session()
+    r = client.post("/api/results/sess-score-001/answers", json={
+        "answers": {"Q001": "a", "Q002": "b"},  # only 2 answered, both correct
+    })
+    assert r.status_code == 200, r.get_json()
+    payload = r.get_json()
+    assert payload["score_total"] == 2, payload    # answered count
+    assert payload["score_correct"] == 2, payload  # both correct
+    assert _read_score("sess-score-001") == (2, 2)
+
+
+def test_blank_answer_strings_not_counted(client):
+    """Empty-string entries in the answers dict should not be treated
+    as attempts (FE may include "" for not-yet-clicked options under
+    some race conditions)."""
+    _seed_session()
+    r = client.post("/api/results/sess-score-001/answers", json={
+        "answers": {"Q001": "a", "Q002": "", "Q003": "   "},
+    })
+    assert r.status_code == 200, r.get_json()
+    assert _read_score("sess-score-001") == (1, 1)
+
+
 def test_answers_dict_too_large_400(client):
     """BACKEND-12: 1000+ entries is rejected at validation."""
     huge = {f"Q{i:04d}": "a" for i in range(1500)}
