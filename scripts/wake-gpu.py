@@ -36,34 +36,15 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
-import socket
 import sys
 
+# Share the magic-packet core with wol_server.py (sibling module).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from wol import send_wol  # noqa: E402
 
-def _normalize_mac(raw: str) -> bytes:
-    """Parse a MAC in XX-XX / XX:XX / XXXXXXXXXXXX form into 6 bytes."""
-    hexstr = re.sub(r"[^0-9A-Fa-f]", "", raw)
-    if len(hexstr) != 12:
-        raise ValueError(
-            f"MAC アドレスが不正です: {raw!r} "
-            f"(16進12桁が必要、解釈後={hexstr!r})"
-        )
-    return bytes.fromhex(hexstr)
-
-
-def _build_magic_packet(mac_bytes: bytes) -> bytes:
-    # 6 bytes of 0xFF followed by the target MAC repeated 16 times.
-    return b"\xff" * 6 + mac_bytes * 16
-
-
-def send_wol(mac: str, broadcast: str = "255.255.255.255", port: int = 9) -> None:
-    packet = _build_magic_packet(_normalize_mac(mac))
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        # Primary port (9) plus legacy echo port (7) — cheap insurance.
-        for p in {port, 7}:
-            s.sendto(packet, (broadcast, p))
+# Backwards-compatible aliases (older callers / tests referenced these).
+from wol import normalize_mac as _normalize_mac  # noqa: E402,F401
+from wol import build_magic_packet as _build_magic_packet  # noqa: E402,F401
 
 
 def main(argv: list[str]) -> int:
