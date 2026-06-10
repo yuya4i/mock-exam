@@ -6,6 +6,15 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Explicit, env-distinct image tag. Without this, Compose derives
+    # the name from {project}-{service} = "quiz-app-backend" for BOTH
+    # this file and docker-compose.dev.yml. Whichever was built last
+    # wins the tag, so a `docker compose -f docker-compose.dev.yml build`
+    # silently replaces the prod image with the dev one (CMD run_dev.py,
+    # no COPYd app code) and `docker compose up -d` then crash-loops on
+    # "can't open file '/app/run_dev.py'". Distinct tags make dev/prod
+    # physically separate images.
+    image: quiz-app-backend:prod
     container_name: quiz-backend
     ports:
       - "4321:4321"
@@ -48,6 +57,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    # Distinct prod tag — same collision story as backend (dev frontend
+    # is a Vite server, prod is nginx; sharing "quiz-app-frontend"
+    # mixes them up).
+    image: quiz-app-frontend:prod
     container_name: quiz-frontend
     ports:
       - "1234:1234"

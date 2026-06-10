@@ -6,6 +6,11 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
+    # Distinct dev tag so it never collides with the prod image
+    # (quiz-app-backend:prod). See docker-compose.yml for the full
+    # rationale — sharing the auto-derived "quiz-app-backend" tag let
+    # a dev build clobber prod and vice versa.
+    image: quiz-app-backend:dev
     container_name: quiz-backend
     ports:
       - "4321:4321"
@@ -64,6 +69,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
+    # Distinct dev tag (vs quiz-app-frontend:prod nginx image).
+    image: quiz-app-frontend:dev
     container_name: quiz-frontend
     ports:
       - "1234:1234"
