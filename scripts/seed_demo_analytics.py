@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""Seed the quiz_sessions table with consistent demo analytics data.
+"""Seed quiz_sessions with consistent demo analytics, split by exam type.
 
-Goal: an overall score of ~73% that stays internally consistent across
-EVERY analytics endpoint. The breakdown / tags / profile endpoints
-recompute correct/total from each question's `answer` vs the stored
-`user_answers`, so we can't just write score columns — the per-question
-answers must actually yield ~73%. This script:
+Produces >=300 answered questions across 5 certification "exam types"
+(JSTQB FL / JSTQB AL / IPA 基本情報 / IPA 応用情報 / IPA 情報処理安全確保
+支援士). Each (exam_type, category) becomes one session. Correctness is
+assigned per question by a level-based probability scaled to a per-exam-
+type target accuracy, then globally nudged so the OVERALL lands ~73% —
+and because user_answers are derived from that assignment, every
+analytics endpoint (stored-column AND recompute) agrees.
 
-  1. builds ~4 category "mock exams" of real-ish questions (topic, level,
-     tags, choices, answer),
-  2. marks each question correct/wrong with a level-based probability
-     (K1 easiest .. K4 hardest) so the K1>K2>K3>K4 curve looks real,
-  3. nudges the global correct count to hit exactly ~73%,
-  4. derives user_answers (correct -> answer, wrong -> a distractor) and
-     sets score_correct/score_total to match,
-  5. spreads answered_at across recent days (active_days + recently_missed
-     ordering look real),
-  6. REPLACES quiz_sessions (existing rows deleted; a .bak of the DB
-     should be taken by the caller first).
+The exam_type dimension lets the analytics tab filter / summarize by
+certification family.
 
 Run:  python3 scripts/seed_demo_analytics.py --yes
 """
@@ -33,254 +26,293 @@ import sys
 random.seed(42)
 
 TARGET_ACCURACY = 0.73
-LEVEL_P = {"K1": 0.90, "K2": 0.80, "K3": 0.66, "K4": 0.55}
+VARIANTS_PER_TOPIC = 4   # 91 topics * 4 = 364 questions (>=300)
 
-# (topic, level, [tags], question, (a,b,c,d), answer_key)
-NETWORK = [
-    ("OSI参照モデル", "K1", ["osi参照モデル", "プロトコル階層"],
-     "OSI参照モデルで第3層(ネットワーク層)に該当するものはどれか。",
-     ("IPによる経路選択", "MACアドレスでのフレーム転送", "TCPの再送制御", "HTTPの要求応答"), "a"),
-    ("OSI参照モデル", "K2", ["osi参照モデル", "プロトコル階層"],
-     "トランスポート層の役割として最も適切なものはどれか。",
-     ("エンドツーエンドの信頼性確保", "物理信号の変換", "経路表の管理", "ドメイン名解決"), "a"),
-    ("TCP/IP", "K2", ["tcp/ip", "コネクション管理"],
-     "TCPの3ウェイハンドシェイクで最初に送られるセグメントはどれか。",
-     ("SYN", "ACK", "FIN", "RST"), "a"),
-    ("TCP/IP", "K3", ["tcp/ip", "輻輳制御"],
-     "TCPの輻輳制御でパケットロス検知後にウィンドウを大きく絞る動作はどれか。",
-     ("スロースタートへの復帰", "高速再送の停止", "MSSの増加", "RTTの無視"), "a"),
-    ("サブネット", "K3", ["サブネット", "tcp/ip"],
-     "192.168.1.0/26 のサブネットで利用可能なホスト数はいくつか。",
-     ("62", "64", "126", "30"), "a"),
-    ("サブネット", "K4", ["サブネット", "ルーティング"],
-     "可変長サブネットマスク(VLSM)導入の主目的として最も適切なものはどれか。",
-     ("アドレス空間の効率的割当", "ブロードキャスト廃止", "MACの短縮", "DNS負荷分散"), "a"),
-    ("ルーティング", "K2", ["ルーティング"],
-     "ディスタンスベクタ型ルーティングの説明として正しいものはどれか。",
-     ("隣接ルータと経路情報を交換する", "全トポロジを各ルータが保持する", "経路を手動固定する", "MACで転送する"), "a"),
-    ("ルーティング", "K4", ["ルーティング", "輻輳制御"],
-     "リンクステート型がディスタンスベクタ型より収束が速い主因はどれか。",
-     ("全体トポロジから最短経路を計算するため", "ホップ数を無視するため", "経路を広告しないため", "TTLが長いため"), "a"),
-    ("DNS", "K1", ["dns"],
-     "DNSで名前からIPアドレスを引くレコード種別はどれか。",
-     ("Aレコード", "MXレコード", "PTRレコード", "TXTレコード"), "a"),
-    ("DNS", "K3", ["dns", "http"],
-     "DNSキャッシュポイズニングの緩和策として適切なものはどれか。",
-     ("DNSSECの導入", "TTLを0にする", "UDPを禁止する", "Aレコード廃止"), "a"),
-    ("HTTP", "K2", ["http"],
-     "HTTPステータス 301 の意味はどれか。",
-     ("恒久的なリダイレクト", "認証が必要", "サーバ内部エラー", "リソース未検出"), "a"),
-    ("HTTP", "K3", ["http", "tcp/ip"],
-     "HTTP/2 が HTTP/1.1 比で遅延を減らす主な仕組みはどれか。",
-     ("多重化(ストリーム)", "テキストヘッダ化", "コネクション毎1要求", "TLS廃止"), "a"),
-    ("スイッチング", "K2", ["スイッチング"],
-     "L2スイッチがフレーム転送先を決めるために使う表はどれか。",
-     ("MACアドレステーブル", "ルーティングテーブル", "ARPブラックリスト", "DNSゾーン"), "a"),
-    ("スイッチング", "K4", ["スイッチング", "ルーティング"],
-     "VLAN間通信に必要な機能はどれか。",
-     ("ルーティング(L3)", "ハブの追加", "STPの無効化", "全ポートアクセス化"), "a"),
+# level adjustment around the exam-type target (K1 easiest .. K4 hardest)
+LEVEL_ADJ = {"K1": 0.12, "K2": 0.04, "K3": -0.06, "K4": -0.14}
+
+STEMS = [
+    "{t}に関する説明として最も適切なものはどれか。",
+    "{t}について正しい記述はどれか。",
+    "{t}の理解を問う。最も適切な選択肢はどれか。",
+    "{t}に関して誤っているものを選んだうえで正しい対処はどれか。",
 ]
 
-DATABASE = [
-    ("正規化", "K1", ["正規化", "設計"],
-     "第1正規形が満たすべき条件はどれか。",
-     ("繰り返し項目を排除し各列が原子値", "部分関数従属の排除", "推移的従属の排除", "外部キー必須"), "a"),
-    ("正規化", "K2", ["正規化", "設計"],
-     "第3正規形で排除する従属はどれか。",
-     ("推移的関数従属", "完全関数従属", "多値従属", "結合従属"), "a"),
-    ("正規化", "K4", ["正規化", "設計"],
-     "過度な正規化が招きやすい問題はどれか。",
-     ("結合増加による性能低下", "更新不整合の増加", "冗長データの増加", "NULLの完全排除"), "a"),
-    ("SQL", "K2", ["sql"],
-     "重複を除いて取得するSQL句はどれか。",
-     ("SELECT DISTINCT", "SELECT UNIQUE COUNT", "GROUP DISTINCT", "SELECT ONLY"), "a"),
-    ("SQL", "K3", ["sql", "結合"],
-     "左表の全行と一致する右表行を返す結合はどれか。",
-     ("LEFT OUTER JOIN", "INNER JOIN", "CROSS JOIN", "RIGHT ONLY JOIN"), "a"),
-    ("SQL", "K3", ["sql", "インデックス"],
-     "WHERE句で関数を列に適用するとインデックスが効きにくい理由はどれか。",
-     ("非SARGableになり全走査になりがち", "型が変わるため", "ロックが増えるため", "NULLになるため"), "a"),
-    ("トランザクション", "K2", ["トランザクション", "acid"],
-     "ACIDの「I」が表す性質はどれか。",
-     ("分離性(Isolation)", "原子性", "一貫性", "永続性"), "a"),
-    ("トランザクション", "K3", ["トランザクション", "ロック"],
-     "あるTxが書いた未コミット値を別Txが読む異常はどれか。",
-     ("ダーティリード", "ファントムリード", "反復不能読取", "ロストアップデート"), "a"),
-    ("トランザクション", "K4", ["トランザクション", "ロック"],
-     "ファントムリードを防げる最も強い分離レベルはどれか。",
-     ("SERIALIZABLE", "READ COMMITTED", "READ UNCOMMITTED", "REPEATABLE READ"), "a"),
-    ("インデックス", "K2", ["インデックス"],
-     "B+木インデックスが得意な検索はどれか。",
-     ("範囲検索と前方一致", "中間一致(LIKE '%x%')", "全列集計", "乱数照合"), "a"),
-    ("インデックス", "K3", ["インデックス", "設計"],
-     "複合インデックス(A,B)が効きにくいクエリはどれか。",
-     ("Bのみを条件にした検索", "Aのみの検索", "A AND Bの検索", "Aの範囲検索"), "a"),
-    ("結合", "K3", ["結合", "sql"],
-     "大表同士の等値結合で一般に有利なアルゴリズムはどれか。",
-     ("ハッシュ結合", "ネステッドループ", "クロス結合", "ソート無しマージ"), "a"),
-    ("設計", "K2", ["設計"],
-     "サロゲートキーの利点として適切なものはどれか。",
-     ("業務変更の影響を受けにくい", "意味が読み取りやすい", "必ず一意でない", "結合が不要になる"), "a"),
-    ("ロック", "K4", ["ロック", "トランザクション"],
-     "2相ロック(2PL)が保証するものはどれか。",
-     ("直列化可能性", "デッドロック皆無", "ロック不要化", "常に最速"), "a"),
-]
+# exam_type -> dict(category -> list of (topic, level, [tags]))
+EXAMS = {
+    "JSTQB FL": {
+        "_model": "qwen3.6-27b-abliterated", "_diff": "easy", "_target": 0.82,
+        "_day": "2026-05-20",
+        "テストの基礎": [
+            ("テストの7原則", "K1", ["テスト原則"]),
+            ("テストプロセス", "K2", ["テストプロセス"]),
+            ("テストの心理学", "K1", ["テスト心理学"]),
+            ("エラー・欠陥・故障", "K1", ["欠陥", "用語"]),
+        ],
+        "テスト技法": [
+            ("同値分割法", "K2", ["同値分割", "ブラックボックス"]),
+            ("境界値分析", "K3", ["境界値分析", "ブラックボックス"]),
+            ("デシジョンテーブルテスト", "K3", ["デシジョンテーブル", "ブラックボックス"]),
+            ("状態遷移テスト", "K3", ["状態遷移", "ブラックボックス"]),
+            ("ユースケーステスト", "K2", ["ユースケース", "ブラックボックス"]),
+            ("制御フローテスト", "K4", ["ホワイトボックス", "カバレッジ"]),
+            ("経験ベースの技法", "K2", ["経験ベース", "探索的テスト"]),
+        ],
+        "テストマネジメント": [
+            ("テスト計画", "K2", ["テスト計画", "マネジメント"]),
+            ("リスクベーステスト", "K3", ["リスク", "マネジメント"]),
+            ("欠陥マネジメント", "K2", ["欠陥", "マネジメント"]),
+            ("テスト見積り", "K3", ["見積り", "マネジメント"]),
+        ],
+        "静的テスト": [
+            ("レビューの種類", "K2", ["レビュー", "静的テスト"]),
+            ("静的解析", "K2", ["静的解析", "静的テスト"]),
+        ],
+        "テストツール": [
+            ("テスト自動化", "K2", ["自動化", "ツール"]),
+            ("ツール導入のリスク", "K3", ["自動化", "ツール", "リスク"]),
+        ],
+    },
+    "JSTQB AL": {
+        "_model": "qwen3.6-35b-claude4.7-thinking", "_diff": "hard", "_target": 0.68,
+        "_day": "2026-05-27",
+        "テストプロセス": [
+            ("テスト分析と設計", "K3", ["テストプロセス"]),
+            ("テスト実装と実行", "K3", ["テストプロセス"]),
+            ("テスト完了基準", "K4", ["テスト完了基準"]),
+        ],
+        "テストマネジメント応用": [
+            ("テスト戦略", "K4", ["テスト戦略", "マネジメント"]),
+            ("テスト進捗の監視と制御", "K3", ["メトリクス", "マネジメント"]),
+            ("テスト見積り技法", "K4", ["見積り", "マネジメント"]),
+        ],
+        "レビュー": [
+            ("形式的レビュー", "K3", ["レビュー"]),
+            ("レビュー指標", "K4", ["レビュー", "メトリクス"]),
+        ],
+        "欠陥マネジメント": [
+            ("欠陥ライフサイクル", "K3", ["欠陥"]),
+            ("根本原因分析", "K4", ["欠陥", "根本原因分析"]),
+        ],
+        "テスト自動化": [
+            ("自動化アーキテクチャ", "K4", ["自動化", "アーキテクチャ"]),
+            ("自動化のROI", "K4", ["自動化", "roi"]),
+        ],
+    },
+    "IPA 基本情報": {
+        "_model": "gemma4-12b-qat-uncensored", "_diff": "medium", "_target": 0.79,
+        "_day": "2026-06-01",
+        "基礎理論": [
+            ("基数変換", "K2", ["基数変換", "基礎理論"]),
+            ("論理演算", "K2", ["論理演算", "基礎理論"]),
+            ("補数表現", "K3", ["補数", "基礎理論"]),
+            ("確率と統計", "K2", ["確率", "基礎理論"]),
+        ],
+        "アルゴリズム": [
+            ("データ構造", "K2", ["データ構造"]),
+            ("整列アルゴリズム", "K3", ["ソート", "アルゴリズム"]),
+            ("探索アルゴリズム", "K3", ["探索", "アルゴリズム"]),
+            ("計算量", "K3", ["計算量", "アルゴリズム"]),
+        ],
+        "コンピュータシステム": [
+            ("CPUアーキテクチャ", "K2", ["cpu", "ハードウェア"]),
+            ("記憶階層", "K2", ["メモリ", "ハードウェア"]),
+            ("OSの役割", "K2", ["os"]),
+        ],
+        "データベース": [
+            ("関係モデル", "K2", ["関係モデル", "db"]),
+            ("正規化", "K3", ["正規化", "db"]),
+            ("SQL基礎", "K2", ["sql", "db"]),
+            ("トランザクション", "K3", ["トランザクション", "db"]),
+        ],
+        "ネットワーク": [
+            ("OSIとTCP/IP", "K2", ["tcp/ip", "network"]),
+            ("サブネット計算", "K3", ["サブネット", "network"]),
+            ("DNSとDHCP", "K2", ["dns", "network"]),
+        ],
+        "セキュリティ": [
+            ("暗号方式", "K2", ["暗号", "security"]),
+            ("認証技術", "K3", ["認証", "security"]),
+            ("マルウェア対策", "K2", ["マルウェア", "security"]),
+        ],
+    },
+    "IPA 応用情報": {
+        "_model": "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive-q4_k_m",
+        "_diff": "hard", "_target": 0.68, "_day": "2026-06-06",
+        "システムアーキテクチャ": [
+            ("冗長構成と可用性", "K3", ["可用性", "アーキテクチャ"]),
+            ("性能設計", "K4", ["性能", "アーキテクチャ"]),
+            ("仮想化技術", "K3", ["仮想化", "アーキテクチャ"]),
+        ],
+        "データベース応用": [
+            ("インデックス設計", "K4", ["インデックス", "db"]),
+            ("トランザクション分離", "K4", ["トランザクション", "db"]),
+            ("分散データベース", "K4", ["分散", "db"]),
+        ],
+        "ネットワーク応用": [
+            ("ルーティングプロトコル", "K4", ["ルーティング", "network"]),
+            ("負荷分散", "K3", ["負荷分散", "network"]),
+            ("QoS", "K4", ["qos", "network"]),
+        ],
+        "セキュリティ応用": [
+            ("公開鍵基盤(PKI)", "K3", ["pki", "security"]),
+            ("セキュアプロトコル", "K3", ["tls", "security"]),
+            ("リスクアセスメント", "K4", ["リスク", "security"]),
+        ],
+        "プロジェクトマネジメント": [
+            ("WBS", "K2", ["pm"]),
+            ("アローダイアグラム", "K3", ["pm", "スケジュール"]),
+            ("EVM", "K4", ["pm", "evm"]),
+        ],
+        "アルゴリズム応用": [
+            ("動的計画法", "K4", ["アルゴリズム", "動的計画法"]),
+            ("グラフアルゴリズム", "K4", ["アルゴリズム", "グラフ"]),
+        ],
+    },
+    "IPA 情報処理安全確保支援士": {
+        "_model": "qwen3.6-35b-aggressive", "_diff": "hard", "_target": 0.63,
+        "_day": "2026-06-09",
+        "暗号と認証": [
+            ("公開鍵基盤(PKI)", "K3", ["pki", "暗号"]),
+            ("デジタル署名", "K3", ["署名", "暗号"]),
+            ("鍵管理", "K4", ["鍵管理", "暗号"]),
+            ("多要素認証", "K3", ["認証"]),
+        ],
+        "ネットワークセキュリティ": [
+            ("ファイアウォール設計", "K3", ["firewall", "network"]),
+            ("IDS/IPS", "K3", ["ids", "network"]),
+            ("VPN", "K3", ["vpn", "network"]),
+            ("DNSセキュリティ", "K4", ["dnssec", "network"]),
+        ],
+        "セキュア開発": [
+            ("セキュアコーディング", "K3", ["セキュア開発"]),
+            ("脆弱性診断", "K4", ["脆弱性診断", "セキュア開発"]),
+            ("SAST/DAST", "K4", ["診断", "セキュア開発"]),
+        ],
+        "攻撃と対策": [
+            ("標的型攻撃", "K3", ["攻撃手法"]),
+            ("Webアプリ攻撃", "K4", ["攻撃手法", "web"]),
+            ("権限昇格", "K4", ["攻撃手法"]),
+        ],
+        "インシデントと管理": [
+            ("インシデント対応", "K3", ["インシデント", "管理"]),
+            ("フォレンジック", "K4", ["フォレンジック", "管理"]),
+            ("ISMS", "K2", ["isms", "管理"]),
+            ("関連法規", "K2", ["法務", "管理"]),
+        ],
+    },
+}
 
-SECURITY = [
-    ("認証", "K1", ["認証", "アクセス制御"],
-     "「知識・所持・生体」を組み合わせる認証方式はどれか。",
-     ("多要素認証", "シングルサインオン", "ロールベース認証", "総当たり認証"), "a"),
-    ("認証", "K2", ["認証"],
-     "OAuth2.0 が主に扱うものはどれか。",
-     ("認可(アクセス委譲)", "暗号化方式", "ファイアウォール制御", "物理認証"), "a"),
-    ("暗号化", "K2", ["暗号化", "公開鍵"],
-     "公開鍵暗号で送信者が暗号化に使う鍵はどれか。",
-     ("受信者の公開鍵", "受信者の秘密鍵", "送信者の秘密鍵", "共通鍵"), "a"),
-    ("暗号化", "K3", ["暗号化", "公開鍵", "tls"],
-     "TLSハンドシェイクで公開鍵暗号が主に使われる目的はどれか。",
-     ("共通鍵の安全な共有", "本文の全暗号化", "圧縮", "改ざん検知のみ"), "a"),
-    ("ハッシュ", "K2", ["ハッシュ"],
-     "パスワード保存で推奨される処理はどれか。",
-     ("ソルト付きハッシュ", "可逆暗号で保存", "平文保存", "Base64エンコード"), "a"),
-    ("ハッシュ", "K3", ["ハッシュ", "暗号化"],
-     "ハッシュの「衝突耐性」が意味するものはどれか。",
-     ("同一ハッシュの別入力を作りにくい", "復号できない", "高速計算できる", "鍵が不要"), "a"),
-    ("攻撃手法", "K2", ["攻撃手法", "脆弱性"],
-     "入力値を悪用してDB操作を行う攻撃はどれか。",
-     ("SQLインジェクション", "DoS", "中間者攻撃", "総当たり"), "a"),
-    ("攻撃手法", "K3", ["攻撃手法", "脆弱性"],
-     "反射型XSSの主な緩和策はどれか。",
-     ("出力エスケープ", "DBの暗号化", "ポート閉塞", "DNSSEC"), "a"),
-    ("攻撃手法", "K4", ["攻撃手法", "認証"],
-     "CSRF対策として最も適切なものはどれか。",
-     ("CSRFトークンの検証", "パスワード長の強制", "TLS化のみ", "IP固定のみ"), "a"),
-    ("アクセス制御", "K2", ["アクセス制御", "認証"],
-     "最小権限の原則の説明として適切なものはどれか。",
-     ("必要最小限の権限のみ付与", "全員に管理者権限", "権限を共有", "権限を無効化"), "a"),
-    ("アクセス制御", "K4", ["アクセス制御"],
-     "RBACの「ロール」が果たす役割はどれか。",
-     ("権限の束を利用者にまとめて割当", "暗号鍵の生成", "ログ収集", "通信暗号化"), "a"),
-    ("tls", "K3", ["tls", "公開鍵"],
-     "サーバ証明書が保証する主な内容はどれか。",
-     ("サーバの正当性(なりすまし防止)", "通信速度", "可用性", "保存暗号化"), "a"),
-    ("脆弱性", "K1", ["脆弱性"],
-     "既知脆弱性に共通の識別子を与える仕組みはどれか。",
-     ("CVE", "OWASP", "CSP", "JVN専用ID"), "a"),
-    ("脆弱性", "K3", ["脆弱性", "攻撃手法"],
-     "ゼロデイ攻撃の特徴として適切なものはどれか。",
-     ("修正前の脆弱性を突く", "必ず内部犯行", "DoSに限定", "暗号を解読する"), "a"),
-]
 
-LINUX = [
-    ("パーミッション", "K1", ["パーミッション"],
-     "chmod 644 file のファイル所有者の権限はどれか。",
-     ("読み書き", "読み取りのみ", "実行のみ", "なし"), "a"),
-    ("パーミッション", "K3", ["パーミッション"],
-     "ディレクトリに設定するスティッキービットの効果はどれか。",
-     ("所有者以外の削除を制限", "実行を禁止", "読取を全許可", "SUID付与"), "a"),
-    ("プロセス", "K2", ["プロセス"],
-     "親プロセス終了で残り init に引き取られるプロセスはどれか。",
-     ("孤児プロセス", "ゾンビプロセス", "デーモン", "フォアグラウンド"), "a"),
-    ("プロセス", "K3", ["プロセス", "シェル"],
-     "プロセスに終了を促す既定シグナルはどれか。",
-     ("SIGTERM", "SIGKILL", "SIGSTOP", "SIGHUP"), "a"),
-    ("シェル", "K2", ["シェル"],
-     "標準エラー出力をファイルへリダイレクトする記法はどれか。",
-     ("2> file", "> file", "1| file", "&< file"), "a"),
-    ("シェル", "K3", ["シェル"],
-     "前コマンドの終了コードを参照する変数はどれか。",
-     ("$?", "$!", "$$", "$#"), "a"),
-    ("systemd", "K2", ["systemd"],
-     "サービスを起動かつ自動起動有効化するコマンドはどれか。",
-     ("systemctl enable --now svc", "systemctl reload svc", "service svc status", "systemctl mask svc"), "a"),
-    ("systemd", "K4", ["systemd", "ログ"],
-     "systemd管理サービスのログを見るコマンドはどれか。",
-     ("journalctl -u svc", "tail /etc/svc", "dmesg only", "cat /proc/svc"), "a"),
-    ("ネットワーク設定", "K3", ["ネットワーク設定"],
-     "待ち受けTCPポート一覧を確認するコマンドはどれか。",
-     ("ss -tlnp", "ping -c", "traceroute", "nslookup"), "a"),
-    ("ネットワーク設定", "K4", ["ネットワーク設定"],
-     "デフォルトゲートウェイを確認するコマンドはどれか。",
-     ("ip route", "ip addr", "arp -a", "hostnamectl"), "a"),
-    ("ログ", "K2", ["ログ"],
-     "ログを末尾から追従表示するコマンドはどれか。",
-     ("tail -f", "head -n", "less +F のみ", "grep -v"), "a"),
-    ("パッケージ管理", "K1", ["パッケージ管理"],
-     "Debian系でパッケージを導入するコマンドはどれか。",
-     ("apt install", "yum install", "dnf install", "pacman -S"), "a"),
-    ("パッケージ管理", "K3", ["パッケージ管理"],
-     "インストール済みパッケージの提供ファイルを調べる(dpkg)コマンドはどれか。",
-     ("dpkg -L pkg", "dpkg -i pkg", "apt search", "dpkg --purge"), "a"),
-    ("プロセス", "K4", ["プロセス", "systemd"],
-     "CPU使用率の高い順にプロセスを監視できるものはどれか。",
-     ("top / htop", "ls -l", "df -h", "free -m"), "a"),
-]
-
-SESSIONS = [
-    ("ネットワーク基礎 模試", "ネットワーク基礎", "qwen3.6-27b-abliterated", "medium", NETWORK, "2026-06-03"),
-    ("データベース設計 模試", "データベース", "qwen3.6-27b-abliterated", "medium", DATABASE, "2026-06-05"),
-    ("情報セキュリティ 模試", "情報セキュリティ", "gemma4-12b-qat-uncensored", "hard",   SECURITY, "2026-06-08"),
-    ("Linux 運用 模試",      "Linux運用",       "hermes4-14b-abliterated",  "easy",   LINUX,    "2026-06-10"),
-]
-
-
-def _wrong_choice(answer: str, choices: dict) -> str:
-    for k in choices:
-        if k != answer:
-            return k
-    return answer
+def _choices(topic: str) -> dict:
+    return {
+        "a": f"{topic}に関する正しい記述",
+        "b": f"{topic}についてのよくある誤解(1)",
+        "c": f"{topic}についてのよくある誤解(2)",
+        "d": f"{topic}とは関係のない記述",
+    }
 
 
 def build():
-    """Return (sessions, total_q, total_correct) with correctness assigned."""
-    # First pass: assign correctness by level probability.
-    built = []
-    flat = []  # references for global tuning: (sess_idx, q_idx, level)
-    for s_idx, (title, cat, model, diff, bank, day) in enumerate(SESSIONS):
-        qs = []
-        for i, (topic, level, tags, qtext, choices4, ans) in enumerate(bank, start=1):
-            choices = {"a": choices4[0], "b": choices4[1], "c": choices4[2], "d": choices4[3]}
-            correct = random.random() < LEVEL_P[level]
-            qs.append({
-                "id": f"Q{i:03d}", "level": level, "topic": topic, "tags": tags,
-                "question": qtext, "choices": choices, "answer": ans,
-                "explanation": f"正解は {ans}。{topic}に関する基本事項。資料の該当章を参照。",
-                "source_hint": f"{cat} / {topic}",
-                "_correct": correct,
+    """Build all sessions with correctness assigned; return (sessions, total, correct)."""
+    sessions = []
+    flat = []  # (s_idx, q_idx, level)
+    for exam_type, spec in EXAMS.items():
+        model = spec["_model"]; diff = spec["_diff"]
+        target = spec["_target"]; day = spec["_day"]
+        for category, topics in spec.items():
+            if category.startswith("_"):
+                continue
+            qs = []
+            qn = 0
+            for (topic, level, tags) in topics:
+                for v in range(VARIANTS_PER_TOPIC):
+                    qn += 1
+                    p = min(0.97, max(0.05, target + LEVEL_ADJ[level]))
+                    qs.append({
+                        "id": f"Q{qn:03d}", "level": level, "topic": topic,
+                        "tags": tags,
+                        "question": STEMS[v % len(STEMS)].format(t=topic),
+                        "choices": _choices(topic), "answer": "a",
+                        "explanation": f"正解は a。{topic}({category})の基本。資料該当章を参照。",
+                        "source_hint": f"{exam_type} / {category} / {topic}",
+                        "_correct": random.random() < p,
+                    })
+                    flat.append((len(sessions), len(qs) - 1, level))
+            sessions.append({
+                "exam_type": exam_type, "category": category, "model": model,
+                "diff": diff, "day": day,
+                "title": f"{exam_type} {category} 模試", "questions": qs,
             })
-            flat.append((s_idx, len(qs) - 1, level))
-        built.append({"title": title, "cat": cat, "model": model, "diff": diff,
-                      "day": day, "questions": qs})
 
     total = len(flat)
-    desired = round(total * TARGET_ACCURACY)
 
-    def cur_correct():
-        return sum(1 for s in built for q in s["questions"] if q["_correct"])
+    # Tune EACH exam_type to its own target (not globally) so per-type
+    # accuracy stays realistic; the per-type targets are chosen so the
+    # count-weighted average lands ~73% overall.
+    by_type: dict[str, list] = {}
+    for f in flat:
+        by_type.setdefault(sessions[f[0]]["exam_type"], []).append(f)
 
-    # Tune toward desired: flip hardest-first when too high, easiest-first when too low.
-    order_hard = sorted(flat, key=lambda f: LEVEL_P[f[2]])          # hard (low p) first
-    order_easy = sorted(flat, key=lambda f: -LEVEL_P[f[2]])         # easy (high p) first
-    guard = 0
-    while cur_correct() > desired and guard < total * 4:
-        for s_idx, q_idx, _ in order_hard:
-            if cur_correct() <= desired:
-                break
-            q = built[s_idx]["questions"][q_idx]
-            if q["_correct"]:
-                q["_correct"] = False
-        guard += 1
-    guard = 0
-    while cur_correct() < desired and guard < total * 4:
-        for s_idx, q_idx, _ in order_easy:
-            if cur_correct() >= desired:
-                break
-            q = built[s_idx]["questions"][q_idx]
-            if not q["_correct"]:
-                q["_correct"] = True
-        guard += 1
+    def grp_correct(items):
+        return sum(1 for s_idx, q_idx, _ in items
+                   if sessions[s_idx]["questions"][q_idx]["_correct"])
 
-    return built, total, cur_correct()
+    for exam_type, items in by_type.items():
+        target = EXAMS[exam_type]["_target"]
+        desired = round(len(items) * target)
+        hard = sorted(items, key=lambda f: LEVEL_ADJ[f[2]])    # hardest first
+        easy = sorted(items, key=lambda f: -LEVEL_ADJ[f[2]])   # easiest first
+        guard = 0
+        while grp_correct(items) > desired and guard < len(items) * 4:
+            for s_idx, q_idx, _ in hard:
+                if grp_correct(items) <= desired:
+                    break
+                q = sessions[s_idx]["questions"][q_idx]
+                if q["_correct"]:
+                    q["_correct"] = False
+            guard += 1
+        guard = 0
+        while grp_correct(items) < desired and guard < len(items) * 4:
+            for s_idx, q_idx, _ in easy:
+                if grp_correct(items) >= desired:
+                    break
+                q = sessions[s_idx]["questions"][q_idx]
+                if not q["_correct"]:
+                    q["_correct"] = True
+            guard += 1
+
+    correct = sum(1 for s in sessions for q in s["questions"] if q["_correct"])
+
+    # Minimal global nudge to land the OVERALL exactly on ~73% (per-type
+    # tuning gets close; this flips at most a couple of questions so the
+    # per-type rates stay essentially intact).
+    desired_total = round(total * TARGET_ACCURACY)
+    easy_all = sorted(flat, key=lambda f: -LEVEL_ADJ[f[2]])
+    hard_all = sorted(flat, key=lambda f: LEVEL_ADJ[f[2]])
+    for s_idx, q_idx, _ in easy_all:
+        if correct >= desired_total:
+            break
+        q = sessions[s_idx]["questions"][q_idx]
+        if not q["_correct"]:
+            q["_correct"] = True; correct += 1
+    for s_idx, q_idx, _ in hard_all:
+        if correct <= desired_total:
+            break
+        q = sessions[s_idx]["questions"][q_idx]
+        if q["_correct"]:
+            q["_correct"] = False; correct -= 1
+
+    return sessions, total, correct
+
+
+def _ensure_exam_type_column(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(quiz_sessions)").fetchall()}
+    if "exam_type" not in cols:
+        conn.execute(
+            "ALTER TABLE quiz_sessions ADD COLUMN exam_type TEXT NOT NULL DEFAULT '未分類'"
+        )
+        conn.commit()
 
 
 def main(argv):
@@ -288,50 +320,56 @@ def main(argv):
     ap.add_argument("--db", default=os.path.join(os.path.dirname(__file__), "..", "data", "quizgen.db"))
     ap.add_argument("--yes", action="store_true", help="confirm: deletes existing quiz_sessions")
     args = ap.parse_args(argv)
-
     if not args.yes:
-        print("既存 quiz_sessions を全削除してデモを投入します。--yes を付けて実行してください。")
+        print("既存 quiz_sessions を全削除してデモ(種別付き)を投入します。--yes を付けて実行してください。")
         return 1
 
-    built, total, correct = build()
+    sessions, total, correct = build()
     conn = sqlite3.connect(args.db)
     try:
+        _ensure_exam_type_column(conn)
         conn.execute("DELETE FROM quiz_sessions")
-        for s in built:
+        for s in sessions:
             qs = s["questions"]
             user_answers = {}
             sc = 0
             for q in qs:
                 if q["_correct"]:
-                    user_answers[q["id"]] = q["answer"]
-                    sc += 1
+                    user_answers[q["id"]] = "a"; sc += 1
                 else:
-                    user_answers[q["id"]] = _wrong_choice(q["answer"], q["choices"])
-            # strip the private _correct flag before persisting
-            clean_qs = [{k: v for k, v in q.items() if k != "_correct"} for q in qs]
+                    user_answers[q["id"]] = "bcd"[(int(q["id"][1:]) % 3)]
+            clean = [{k: v for k, v in q.items() if k != "_correct"} for q in qs]
             levels = sorted({q["level"] for q in qs})
-            sid = "demo-" + s["cat"].lower().replace(" ", "-").replace("/", "-")[:40] \
-                  + "-" + s["day"].replace("-", "")
-            gen_at = f'{s["day"]}T09:00:00+00:00'
-            ans_at = f'{s["day"]}T09:40:00+00:00'
+            sid = ("demo-" + s["exam_type"] + "-" + s["category"]).lower()
+            sid = "".join(ch if ch.isalnum() else "-" for ch in sid)[:60] + "-" + s["day"].replace("-", "")
             conn.execute(
                 """INSERT INTO quiz_sessions
                    (session_id, document_id, model, source_title, source_type,
-                    category, question_count, difficulty, levels, questions,
-                    user_answers, score_correct, score_total, generated_at, answered_at)
-                   VALUES (?, NULL, ?, ?, 'demo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sid, s["model"], s["title"], s["cat"], len(qs), s["diff"],
-                 json.dumps(levels, ensure_ascii=False),
-                 json.dumps(clean_qs, ensure_ascii=False),
+                    category, exam_type, question_count, difficulty, levels,
+                    questions, user_answers, score_correct, score_total,
+                    generated_at, answered_at)
+                   VALUES (?, NULL, ?, ?, 'demo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sid, s["model"], s["title"], s["category"], s["exam_type"],
+                 len(qs), s["diff"], json.dumps(levels, ensure_ascii=False),
+                 json.dumps(clean, ensure_ascii=False),
                  json.dumps(user_answers, ensure_ascii=False),
-                 sc, len(qs), gen_at, ans_at),
+                 sc, len(qs),
+                 f'{s["day"]}T09:00:00+00:00', f'{s["day"]}T09:50:00+00:00'),
             )
         conn.commit()
     finally:
         conn.close()
 
-    print(f"投入完了: {len(built)} セッション / {total} 問 / 正答 {correct} "
-          f"= 総合 {round(correct/total*100)}%")
+    by_type = {}
+    for s in sessions:
+        t = s["exam_type"]
+        c = sum(1 for q in s["questions"] if q["_correct"])
+        n = len(s["questions"])
+        by_type.setdefault(t, [0, 0])
+        by_type[t][0] += c; by_type[t][1] += n
+    print(f"投入: {len(sessions)} セッション / {total} 問 / 正答 {correct} = 総合 {round(correct/total*100)}%")
+    for t, (c, n) in by_type.items():
+        print(f"  {t:22} {c:3}/{n:3} = {round(c/n*100)}%")
     return 0
 
 

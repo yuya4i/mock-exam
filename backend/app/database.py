@@ -51,6 +51,7 @@ def init_db() -> None:
                 source_title TEXT NOT NULL,
                 source_type TEXT NOT NULL,
                 category TEXT NOT NULL DEFAULT '',
+                exam_type TEXT NOT NULL DEFAULT '未分類',
                 question_count INTEGER NOT NULL,
                 difficulty TEXT NOT NULL,
                 levels TEXT NOT NULL,
@@ -77,6 +78,15 @@ def init_db() -> None:
             )
             conn.commit()
             logger.info("マイグレーション: quiz_sessions に category カラムを追加")
+
+        # マイグレーション: exam_type カラム (JSTQB / IPA 等の資格種別) が
+        # 無ければ追加。既存レコードは '未分類' のまま。
+        if "exam_type" not in columns:
+            conn.execute(
+                "ALTER TABLE quiz_sessions ADD COLUMN exam_type TEXT NOT NULL DEFAULT '未分類'"
+            )
+            conn.commit()
+            logger.info("マイグレーション: quiz_sessions に exam_type カラムを追加")
 
         logger.info(f"データベース初期化完了: {DB_PATH}")
     finally:

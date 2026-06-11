@@ -437,6 +437,12 @@ export const useResultsStore = defineStore('results', () => {
   })
   let _backfillAbort = null
 
+  // 資格種別 (JSTQB / IPA 各区分) の分析フィルタ。
+  //   examType '' = 全種別、それ以外はその種別だけに絞って全集計を再取得。
+  //   examTypes = 種別別サマリ (セレクタ + サマリカード用、常に全体)。
+  const examType  = ref('')
+  const examTypes = ref([])  // [{exam_type, session_count, total_correct, total_answered, accuracy}]
+
   const loading    = ref(false)
   const error      = ref(null)
 
@@ -476,14 +482,17 @@ export const useResultsStore = defineStore('results', () => {
     loading.value = true
     error.value   = null
     _lastFetchAt = now
+    // 種別フィルタ: examType が空でなければ ?exam_type= を付けて全集計を絞る。
+    const q = examType.value ? { params: { exam_type: examType.value } } : {}
     _inflightPromise = (async () => {
       try {
-        const [sessRes, catRes, bdRes, tagRes, profRes] = await Promise.all([
-          api.get('/results'),
-          api.get('/results/categories'),
-          api.get('/results/categories/breakdown'),
-          api.get('/results/tags/breakdown'),
-          api.get('/results/profile'),
+        const [sessRes, catRes, bdRes, tagRes, profRes, etRes] = await Promise.all([
+          api.get('/results', q),
+          api.get('/results/categories', q),
+          api.get('/results/categories/breakdown', q),
+          api.get('/results/tags/breakdown', q),
+          api.get('/results/profile', q),
+          api.get('/results/exam-types'),  // サマリは常に全体
         ])
         sessions.value   = sessRes.data.sessions   || []
         categories.value = catRes.data.categories   || []
@@ -494,6 +503,7 @@ export const useResultsStore = defineStore('results', () => {
           most_attempted: tagRes.data.most_attempted || [],
         }
         if (profRes.data) profile.value = profRes.data
+        examTypes.value = etRes.data.exam_types || []
       } catch (e) {
         error.value = e.message
       } finally {
@@ -502,6 +512,12 @@ export const useResultsStore = defineStore('results', () => {
       }
     })()
     return _inflightPromise
+  }
+
+  // 種別フィルタを変更して再取得 (force: throttle を無視)。
+  function setExamType(t) {
+    examType.value = t || ''
+    return fetchResults({ force: true })
   }
 
   // PERF-C: バックフィル — 既存の未タグ問題に LLM でタグ付け。
@@ -595,6 +611,7 @@ export const useResultsStore = defineStore('results', () => {
   return {
     sessions, categories, breakdown, tagBreakdown,
     profile, backfill,
+    examType, examTypes, setExamType,
     loading, error,
     totalSessions, averageScore, totalQuestions,
     fetchResults, getSession, saveAnswers, deleteSession,
