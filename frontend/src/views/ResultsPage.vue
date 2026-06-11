@@ -23,7 +23,7 @@
 
     <!-- 空状態 -->
     <div v-else-if="resultsStore.sessions.length === 0" class="empty-state card">
-      <span style="font-size:48px">📊</span>
+      <p class="empty-glyph">— NO DATA —</p>
       <p>まだ分析データがありません。</p>
       <RouterLink to="/" class="btn btn-primary">問題を生成する</RouterLink>
     </div>
@@ -35,7 +35,7 @@
       <!-- ============================================================ -->
       <div class="card exam-type-panel" v-if="resultsStore.examTypes.length">
         <div class="et-head">
-          <span class="et-icon">🎓</span>
+          <span class="panel-tag">EXAM_TYPE</span>
           <h3 class="card-title" style="margin:0">資格種別で分析</h3>
           <span class="et-sub">{{ resultsStore.examType || '全種別' }} を表示中</span>
         </div>
@@ -77,7 +77,7 @@
       <!-- ============================================================ -->
       <div class="card my-data-panel">
         <div class="my-data-header" @click="myDataOpen = !myDataOpen">
-          <span class="my-data-icon">👤</span>
+          <span class="panel-tag">PROFILE</span>
           <h3 class="card-title" style="margin:0">マイデータ</h3>
           <span class="my-data-sub">学習者プロファイル / 弱点分析 / 履歴</span>
           <span class="expand-icon" style="margin-left:auto">{{ myDataOpen ? '▼' : '▶' }}</span>
@@ -274,7 +274,7 @@
       <!-- 弱点推奨パネル -->
       <div v-if="weakPoints.length > 0" class="card weak-points-panel">
         <div class="weak-points-header">
-          <span class="weak-points-icon">🎯</span>
+          <span class="panel-tag">FOCUS</span>
           <h3 class="card-title" style="margin:0">強化推奨エリア</h3>
           <span class="weak-points-hint">正答率が低い分野から優先的に復習しましょう</span>
         </div>
@@ -1442,4 +1442,184 @@ onMounted(() => {
   .weak-point-item { flex-wrap: wrap; }
   .wp-detail { order: 3; }
 }
+
+/* ============================================================
+ * DBA console theme — overrides scoped to .results-page.
+ * Aesthetic: SQL/IDE data tool. Monospace metrics, flat squared
+ * panels, thin rules, muted technical palette, cyan accent.
+ * Placed last so .results-page-prefixed rules win on specificity.
+ * ============================================================ */
+.results-page {
+  --c-bg:        #0c1117;
+  --c-panel:     #11161d;
+  --c-panel-2:   #0e131a;
+  --c-line:      #222b36;
+  --c-line-2:    #2e3a48;
+  --c-text:      #cdd6e0;
+  --c-muted:     #7e8a99;
+  --c-faint:     #4f5b69;
+  --c-accent:    #39bae6;
+  --c-accent-dk: #14384a;
+  --c-ok:        #46c66b;
+  --c-warn:      #d6a531;
+  --c-bad:       #f0584b;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", "Menlo", "Consolas",
+          "Liberation Mono", monospace;
+  color: var(--c-text);
+}
+
+/* numbers / metrics / ids → monospace, tabular */
+.results-page .stat-value,
+.results-page .md-stat-value,
+.results-page .et-score, .results-page .et-sessions, .results-page .et-chip small,
+.results-page .topic-bar-score, .results-page .md-tier-count,
+.results-page .session-score, .results-page .score-fraction,
+.results-page .score-pct, .results-page .legend-stats,
+.results-page .per-cat-total, .results-page .md-weak-score,
+.results-page .total-count, .results-page .md-tag-chip small {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* panels: flat, squared, 1px rules, no glow */
+.results-page .card {
+  background: var(--c-panel);
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  box-shadow: none;
+}
+.results-page .card:hover { box-shadow: none; border-color: var(--c-line-2); }
+
+/* section headings → uppercase mono labels with a left accent rule */
+.results-page .section-title {
+  font-family: var(--mono); font-weight: 600; letter-spacing: 0.04em;
+}
+.results-page .sub-title {
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.12em; color: var(--c-muted);
+  border-left: 2px solid var(--c-accent); padding-left: 10px; margin: 4px 0;
+}
+.results-page .card-title {
+  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  letter-spacing: 0.02em; color: var(--c-text);
+}
+
+/* monospace "tag" markers replacing the old emoji icons */
+.results-page .panel-tag {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+  color: var(--c-accent); background: var(--c-accent-dk);
+  border: 1px solid var(--c-accent-dk); padding: 2px 7px; border-radius: 3px;
+}
+
+/* metrics strip */
+.results-page .stat-card {
+  background: var(--c-panel); border: 1px solid var(--c-line); border-radius: 4px;
+}
+.results-page .stat-value { font-size: 26px; font-weight: 600; color: var(--c-text); }
+.results-page .stat-label {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--c-faint);
+}
+
+/* exam-type panel: segmented filter + data rows */
+.results-page .et-sub, .results-page .my-data-sub, .results-page .weak-points-hint {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--c-faint);
+}
+.results-page .et-chip {
+  font-family: var(--mono); border-radius: 3px; background: var(--c-panel-2);
+  border: 1px solid var(--c-line); color: var(--c-muted); font-size: 11px;
+}
+.results-page .et-chip:hover { border-color: var(--c-accent); color: var(--c-text); }
+.results-page .et-chip.active {
+  background: var(--c-accent-dk); border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+.results-page .et-row { border-radius: 3px; }
+.results-page .et-row:hover { background: var(--c-panel-2); }
+.results-page .et-row.active { border-color: var(--c-accent); background: var(--c-accent-dk); }
+.results-page .et-name { font-family: var(--mono); font-size: 12px; color: var(--c-text); }
+
+/* bars: squared, flat, thin */
+.results-page .et-bar-track, .results-page .topic-bar-track,
+.results-page .md-backfill-bar-wrap {
+  border-radius: 0; background: var(--c-panel-2); border-color: var(--c-line);
+}
+.results-page .et-bar, .results-page .topic-bar-fill, .results-page .md-backfill-bar {
+  border-radius: 0;
+}
+
+/* pass / warn / fail palette remap (text) */
+.results-page .score-green  { color: var(--c-ok); }
+.results-page .score-yellow { color: var(--c-warn); }
+.results-page .score-red    { color: var(--c-bad); }
+/* bar fills */
+.results-page .et-bar.score-green,  .results-page .topic-bar-fill.score-green  { background: var(--c-ok); }
+.results-page .et-bar.score-yellow, .results-page .topic-bar-fill.score-yellow { background: var(--c-warn); }
+.results-page .et-bar.score-red,    .results-page .topic-bar-fill.score-red    { background: var(--c-bad); }
+.results-page .et-bar { background: var(--c-accent); }
+
+/* mastery tiles → flat blocks, mono */
+.results-page .md-tier { border-radius: 3px; background: var(--c-panel-2); }
+.results-page .md-tier-name { font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; }
+.results-page .md-tier-rule { font-family: var(--mono); font-size: 10px; }
+.results-page .md-tier-count { color: var(--c-accent); }
+.results-page .md-tier.tier-master     { border-left: 2px solid var(--c-ok); }
+.results-page .md-tier.tier-proficient { border-left: 2px solid var(--c-accent); }
+.results-page .md-tier.tier-familiar   { border-left: 2px solid var(--c-warn); }
+.results-page .md-tier.tier-beginner   { border-left: 2px solid var(--c-bad); }
+
+/* tag chips → squared mono tokens */
+.results-page .md-tag-chip {
+  font-family: var(--mono); border-radius: 3px;
+  background: var(--c-panel); border: 1px solid var(--c-line); color: var(--c-text);
+}
+.results-page .md-tag-chip small { color: var(--c-muted); }
+
+/* labels & misc mono */
+.results-page .md-section-title, .results-page .tag-card-title,
+.results-page .per-cat-chart-title {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em;
+  font-size: 11px; color: var(--c-muted);
+}
+.results-page .topic-bar-label, .results-page .et-name,
+.results-page .session-title, .results-page .wp-category {
+  font-family: var(--mono);
+}
+.results-page .tag-card, .results-page .md-tier, .results-page .md-weak-item,
+.results-page .md-missed-item, .results-page .md-weak-ex, .results-page .md-stat {
+  border-radius: 3px;
+}
+
+/* badges → squared mono */
+.results-page .badge {
+  font-family: var(--mono); border-radius: 3px; font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* buttons within the page → squared, technical */
+.results-page .btn { border-radius: 3px; font-family: var(--mono); letter-spacing: 0.03em; }
+.results-page .btn-primary {
+  background: var(--c-accent-dk); color: var(--c-accent);
+  border: 1px solid var(--c-accent); box-shadow: none;
+}
+.results-page .btn-primary:hover:not(:disabled) {
+  background: #19485c; box-shadow: none;
+}
+.results-page .btn-secondary {
+  background: var(--c-panel-2); border: 1px solid var(--c-line); color: var(--c-text);
+}
+
+/* focus / weak panel + session rows: flatten + mono */
+.results-page .weak-points-panel,
+.results-page .session-item { border-radius: 4px; }
+.results-page .session-item:hover { border-color: var(--c-line-2); }
+.results-page .form-select { border-radius: 3px; font-family: var(--mono); background: var(--c-panel-2); }
+.results-page .empty-glyph {
+  font-family: var(--mono); color: var(--c-faint); letter-spacing: 0.2em; font-size: 14px;
+}
+
+/* weak-points priority blips → squared */
+.results-page .wp-priority { border-radius: 3px; font-family: var(--mono); }
 </style>
