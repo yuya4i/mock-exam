@@ -133,3 +133,58 @@ OLLAMA_BASE_URL=http://192.168.10.22:11434     # 同一LAN直
 - Ollama は現在 `0.0.0.0:11434` 待受 = LAN 全体から到達可能。
   信頼 LAN 前提でなければ `OLLAMA_HOST` を Tailscale IP に絞るか
   ファイアウォールで 11434 を制限する (SECURITY.md 方針と整合)。
+
+## 7. WSL mirrored networking (LAN/tailnet から WSL 内サービスへ到達)
+
+既定の WSL2 は NAT で、WSL 内サービス (quiz-app :1234/:4321, Ollama
+:11434) は GPU-PC の localhost からしか見えず、他機 (スマホ/pi-calc)
+から `192.168.10.22:xxxx` に入れない (実測 000)。`networkingMode=mirrored`
+で WSL を Windows と同じネット名前空間に寄せ、Windows の LAN/Tailscale
+IF にそのまま露出させる。
+
+要件: Win11 22H2+ (build 22621+) / 新しめの WSL。本機は Win11 25H2
+build 26200 / WSL 2.7.3 で対応。
+
+### 適用手順 (Windows ターミナルで。`wsl --shutdown` は全 WSL を落とすので
+### WSL の中からではなく PowerShell/cmd から実行)
+
+1. `C:\Users\<user>\.wslconfig` の `[wsl2]` に追記済:
+   ```
+   networkingMode=mirrored
+   [experimental]
+   hostAddressLoopback=true
+   ```
+   (既存設定はマージ。元は `.wslconfig.bak.*` に退避)
+
+2. ファイアウォール許可 (**管理者 PowerShell**):
+   ```powershell
+   New-NetFirewallRule -DisplayName "WSL mirrored: quiz-app+ollama" `
+     -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1234,4321,11434
+   ```
+
+3. WSL 再起動 (PowerShell/cmd):
+   ```
+   wsl --shutdown
+   ```
+   ~10 秒待つ。
+
+4. 復帰 + アプリ起動:
+   ```
+   wsl -d Ubuntu -u sna -e bash -lc "cd ~/workspace/quiz-app && docker compose -f docker-compose.yml up -d"
+   ```
+
+5. 確認:
+   - WSL 内: `ip -4 addr` に 192.168.10.22 (mirrored) が出る (旧 172.20.x が消える)
+   - スマホ: `http://192.168.10.22:1234/`
+   - pi-calc: `curl http://192.168.10.22:11434/api/tags`
+
+### 元に戻す
+`.wslconfig` を `.bak.*` から復元 → `wsl --shutdown` → 復帰。
+
+### 注意
+- Docker Desktop が稼働している前提 (再起動後にコンテナ復帰)。
+- mirrored 後は §3-1 の resume-heal の必要性も下がる (port-proxy 経由
+  でなくなるため) が、入れておいて害はない。
+- pi-calc → Ollama を Tailscale 経由にするなら、Windows か WSL の
+  どちらかで Tailscale を起動 (mirrored なら WSL で `tailscale up`
+  しても Windows IF 経由で出る)。
