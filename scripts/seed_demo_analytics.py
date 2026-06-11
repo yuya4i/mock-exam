@@ -28,8 +28,13 @@ random.seed(42)
 TARGET_ACCURACY = 0.73
 VARIANTS_PER_TOPIC = 4   # 91 topics * 4 = 364 questions (>=300)
 
-# level adjustment around the exam-type target (K1 easiest .. K4 hardest)
+# level adjustment around the exam-type target (K3/K4 only — K1/K2 are
+# forced correct, see ALWAYS_CORRECT_LEVELS)
 LEVEL_ADJ = {"K1": 0.12, "K2": 0.04, "K3": -0.06, "K4": -0.14}
+
+# 初級レベルは「明らかに解ける」ので必ず正解にする (ユーザー指定)。
+# 中級以上(K3/K4)だけ実力に応じてランダム。
+ALWAYS_CORRECT_LEVELS = {"K1", "K2"}
 
 STEMS = [
     "{t}に関する説明として最も適切なものはどれか。",
@@ -228,15 +233,26 @@ def build():
             for (topic, level, tags) in topics:
                 for v in range(VARIANTS_PER_TOPIC):
                     qn += 1
-                    p = min(0.97, max(0.05, target + LEVEL_ADJ[level]))
+                    # 正誤ルール (ユーザー指定):
+                    #   初級レベル(K1/K2)は「明らかに解ける」→ 必ず正解。
+                    #   中級以上(K3/K4)のみ実力に応じてランダム
+                    #   (種別ターゲット ± レベル補正)。
+                    if level in ALWAYS_CORRECT_LEVELS:
+                        correct = True
+                    else:
+                        p = min(0.95, max(0.05, target + LEVEL_ADJ[level]))
+                        correct = random.random() < p
+                    # タグ: ジャンル/トピックの tag に加えて K-level を付与し、
+                    # 認知レベル別のレーダー分析にも使えるようにする
+                    # (JSTQB の ジャンル×K-level 詳細分析向け)。
                     qs.append({
                         "id": f"Q{qn:03d}", "level": level, "topic": topic,
-                        "tags": tags,
+                        "tags": tags + [level.lower()],
                         "question": STEMS[v % len(STEMS)].format(t=topic),
                         "choices": _choices(topic), "answer": "a",
                         "explanation": f"正解は a。{topic}({category})の基本。資料該当章を参照。",
                         "source_hint": f"{exam_type} / {category} / {topic}",
-                        "_correct": random.random() < p,
+                        "_correct": correct,
                     })
                     flat.append((len(sessions), len(qs) - 1, level))
             sessions.append({
@@ -246,63 +262,10 @@ def build():
             })
 
     total = len(flat)
-
-    # Tune EACH exam_type to its own target (not globally) so per-type
-    # accuracy stays realistic; the per-type targets are chosen so the
-    # count-weighted average lands ~73% overall.
-    by_type: dict[str, list] = {}
-    for f in flat:
-        by_type.setdefault(sessions[f[0]]["exam_type"], []).append(f)
-
-    def grp_correct(items):
-        return sum(1 for s_idx, q_idx, _ in items
-                   if sessions[s_idx]["questions"][q_idx]["_correct"])
-
-    for exam_type, items in by_type.items():
-        target = EXAMS[exam_type]["_target"]
-        desired = round(len(items) * target)
-        hard = sorted(items, key=lambda f: LEVEL_ADJ[f[2]])    # hardest first
-        easy = sorted(items, key=lambda f: -LEVEL_ADJ[f[2]])   # easiest first
-        guard = 0
-        while grp_correct(items) > desired and guard < len(items) * 4:
-            for s_idx, q_idx, _ in hard:
-                if grp_correct(items) <= desired:
-                    break
-                q = sessions[s_idx]["questions"][q_idx]
-                if q["_correct"]:
-                    q["_correct"] = False
-            guard += 1
-        guard = 0
-        while grp_correct(items) < desired and guard < len(items) * 4:
-            for s_idx, q_idx, _ in easy:
-                if grp_correct(items) >= desired:
-                    break
-                q = sessions[s_idx]["questions"][q_idx]
-                if not q["_correct"]:
-                    q["_correct"] = True
-            guard += 1
-
+    # 正誤は上記ルール(K1/K2必正解 + K3/K4ランダム)で確定。全体tuning
+    # はしない (初級必正解の指定を上書きしてしまうため)。総合正答率は
+    # この分布から自然に決まる (初級が底上げするので概ね高め)。
     correct = sum(1 for s in sessions for q in s["questions"] if q["_correct"])
-
-    # Minimal global nudge to land the OVERALL exactly on ~73% (per-type
-    # tuning gets close; this flips at most a couple of questions so the
-    # per-type rates stay essentially intact).
-    desired_total = round(total * TARGET_ACCURACY)
-    easy_all = sorted(flat, key=lambda f: -LEVEL_ADJ[f[2]])
-    hard_all = sorted(flat, key=lambda f: LEVEL_ADJ[f[2]])
-    for s_idx, q_idx, _ in easy_all:
-        if correct >= desired_total:
-            break
-        q = sessions[s_idx]["questions"][q_idx]
-        if not q["_correct"]:
-            q["_correct"] = True; correct += 1
-    for s_idx, q_idx, _ in hard_all:
-        if correct <= desired_total:
-            break
-        q = sessions[s_idx]["questions"][q_idx]
-        if q["_correct"]:
-            q["_correct"] = False; correct -= 1
-
     return sessions, total, correct
 
 
