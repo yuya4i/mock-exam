@@ -31,6 +31,48 @@
     <!-- メインコンテンツ -->
     <template v-else>
       <!-- ============================================================ -->
+      <!-- 資格種別 (JSTQB / IPA 各区分) セレクタ + サマリ -->
+      <!-- ============================================================ -->
+      <div class="card exam-type-panel" v-if="resultsStore.examTypes.length">
+        <div class="et-head">
+          <span class="et-icon">🎓</span>
+          <h3 class="card-title" style="margin:0">資格種別で分析</h3>
+          <span class="et-sub">{{ resultsStore.examType || '全種別' }} を表示中</span>
+        </div>
+
+        <!-- セレクタ (チップ) -->
+        <div class="et-chips">
+          <button
+            class="et-chip" :class="{ active: !resultsStore.examType }"
+            @click="resultsStore.setExamType('')"
+          >全種別</button>
+          <button
+            v-for="e in resultsStore.examTypes" :key="e.exam_type"
+            class="et-chip" :class="{ active: resultsStore.examType === e.exam_type }"
+            @click="resultsStore.setExamType(e.exam_type)"
+          >{{ e.exam_type }} <small :class="scoreColor(e.accuracy)">{{ e.accuracy }}%</small></button>
+        </div>
+
+        <!-- 種別別サマリ (常に全体) -->
+        <div class="et-summary">
+          <div
+            v-for="e in resultsStore.examTypes" :key="'sum-' + e.exam_type"
+            class="et-row" :class="{ active: resultsStore.examType === e.exam_type }"
+            @click="resultsStore.setExamType(resultsStore.examType === e.exam_type ? '' : e.exam_type)"
+          >
+            <span class="et-name">{{ e.exam_type }}</span>
+            <div class="et-bar-track">
+              <div class="et-bar" :class="scoreColor(e.accuracy)" :style="{ width: e.accuracy + '%' }"></div>
+            </div>
+            <span class="et-score" :class="scoreColor(e.accuracy)">
+              {{ e.total_correct }}/{{ e.total_answered }} ({{ e.accuracy }}%)
+            </span>
+            <span class="et-sessions">{{ e.session_count }}回</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
       <!-- マイデータ (PERF-C: 詳細パーソナルデータ) -->
       <!-- ============================================================ -->
       <div class="card my-data-panel">
@@ -1003,6 +1045,48 @@ onMounted(() => {
 }
 
 /* トピック別バー */
+/* ============================================================
+ * 資格種別パネル (JSTQB / IPA)
+ * ============================================================ */
+.exam-type-panel { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.et-head { display: flex; align-items: center; gap: 10px; }
+.et-icon { font-size: 22px; }
+.et-sub  { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+.et-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.et-chip {
+  background: var(--bg-card-hover); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 6px 14px; font-size: 12px; cursor: pointer;
+  transition: all .15s; display: inline-flex; gap: 6px; align-items: baseline;
+}
+.et-chip:hover { border-color: var(--accent); }
+.et-chip.active {
+  background: rgba(99,102,241,0.18); border-color: var(--accent);
+  color: var(--accent-hover); font-weight: 700;
+}
+.et-chip small { font-weight: 700; }
+.et-summary { display: flex; flex-direction: column; gap: 6px; }
+.et-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid transparent; font-size: 12px;
+}
+.et-row:hover { background: var(--bg-card-hover); }
+.et-row.active { border-color: var(--accent); background: rgba(99,102,241,0.08); }
+.et-name { flex-basis: 220px; flex-shrink: 0; font-weight: 600; }
+.et-bar-track { flex: 1; height: 8px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.et-bar { height: 100%; transition: width .3s; background: var(--accent); }
+.et-bar.score-green  { background: var(--success); }
+.et-bar.score-yellow { background: var(--warning); }
+.et-bar.score-red    { background: var(--danger); }
+.et-score { flex-basis: 130px; text-align: right; font-weight: 700; }
+.et-sessions { flex-basis: 44px; text-align: right; color: var(--text-muted); }
+@media (max-width: 640px) {
+  .et-name { flex-basis: 120px; }
+  .et-score { flex-basis: 90px; }
+}
+
 /* ============================================================
  * PERF-C: マイデータ パネル
  * ============================================================ */

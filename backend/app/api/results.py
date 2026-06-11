@@ -63,11 +63,26 @@ def _save_rate_limit_check(session_id: str) -> tuple | None:
 results_bp = Blueprint("results", __name__)
 
 
+def _exam_type_arg() -> str | None:
+    """Read the optional ``?exam_type=`` analytics filter.
+
+    Returns None for "all sessions" (param absent / empty / "all"),
+    otherwise the (length-capped) exam_type to match exactly. Used only
+    in parameter-bound WHERE clauses so it's injection-safe; the cap is
+    just sanity. Values are free-form JP strings like "JSTQB FL" /
+    "IPA 応用情報".
+    """
+    v = (request.args.get("exam_type") or "").strip()
+    if not v or v.lower() == "all":
+        return None
+    return v[:64]
+
+
 @results_bp.get("/results")
 def list_results():
     """
     クイズセッション一覧を返す（generated_at降順）。
-    クエリパラメータ ?document_id= でドキュメントIDフィルタが可能。
+    クエリパラメータ ?document_id= / ?exam_type= でフィルタ可能。
     """
     document_id_raw = request.args.get("document_id")
     document_id: int | None = None
@@ -77,30 +92,68 @@ def list_results():
         )
         if err:
             return jsonify({"error": err}), 400
+    exam_type = _exam_type_arg()
+
+    where = []
+    params: list = []
+    if document_id is not None:
+        where.append("document_id = ?")
+        params.append(document_id)
+    if exam_type is not None:
+        where.append("exam_type = ?")
+        params.append(exam_type)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     conn = get_connection()
     try:
-        if document_id is not None:
-            rows = conn.execute(
-                """SELECT id, session_id, source_title, category, model,
-                          question_count, difficulty, score_correct,
-                          score_total, generated_at, answered_at
-                   FROM quiz_sessions
-                   WHERE document_id = ?
-                   ORDER BY generated_at DESC""",
-                (document_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT id, session_id, source_title, category, model,
-                          question_count, difficulty, score_correct,
-                          score_total, generated_at, answered_at
-                   FROM quiz_sessions
-                   ORDER BY generated_at DESC"""
-            ).fetchall()
-
+        rows = conn.execute(
+            f"""SELECT id, session_id, source_title, category, exam_type, model,
+                       question_count, difficulty, score_correct,
+                       score_total, generated_at, answered_at
+                FROM quiz_sessions
+                {where_sql}
+                ORDER BY generated_at DESC""",
+            params,
+        ).fetchall()
         sessions = [dict(row) for row in rows]
         return jsonify({"sessions": sessions}), 200
+    finally:
+        conn.close()
+
+
+@results_bp.get("/results/exam-types")
+def list_exam_types():
+    """資格種別 (JSTQB / IPA 等) ごとのサマリを返す。
+
+    Response::
+        {"exam_types": [
+            {"exam_type": "JSTQB FL", "session_count": N,
+             "total_answered": N, "total_correct": N, "accuracy": %}, ...
+        ]}
+
+    accuracy は保存列 (score_correct/score_total) ベース。種別セレクタの
+    トップレベル表示用。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT exam_type,
+                      COUNT(*) AS session_count,
+                      SUM(COALESCE(score_correct, 0)) AS total_correct,
+                      SUM(COALESCE(score_total, 0))   AS total_answered
+               FROM quiz_sessions
+               GROUP BY exam_type
+               ORDER BY total_answered DESC"""
+        ).fetchall()
+        out = []
+        for row in rows:
+            r = dict(row)
+            r["accuracy"] = (
+                round(r["total_correct"] / r["total_answered"] * 100)
+                if r["total_answered"] else 0
+            )
+            out.append(r)
+        return jsonify({"exam_types": out}), 200
     finally:
         conn.close()
 
@@ -111,18 +164,26 @@ def list_categories():
     カテゴリ別の集計データを返す（レーダーチャート用）。
     同一カテゴリの全セッションのスコアを合算する。
     """
+    exam_type = _exam_type_arg()
+    extra = ""
+    params: list = []
+    if exam_type is not None:
+        extra = "AND exam_type = ?"
+        params.append(exam_type)
+
     conn = get_connection()
     try:
         rows = conn.execute(
-            """SELECT category,
-                      COUNT(*) AS session_count,
-                      SUM(question_count) AS total_questions,
-                      SUM(COALESCE(score_correct, 0)) AS total_correct,
-                      SUM(COALESCE(score_total, 0)) AS total_answered
-               FROM quiz_sessions
-               WHERE category != ''
-               GROUP BY category
-               ORDER BY total_answered DESC"""
+            f"""SELECT category,
+                       COUNT(*) AS session_count,
+                       SUM(question_count) AS total_questions,
+                       SUM(COALESCE(score_correct, 0)) AS total_correct,
+                       SUM(COALESCE(score_total, 0)) AS total_answered
+                FROM quiz_sessions
+                WHERE category != '' {extra}
+                GROUP BY category
+                ORDER BY total_answered DESC""",
+            params,
         ).fetchall()
 
         categories = []
@@ -158,12 +219,20 @@ def category_breakdown():
       ]
     }
     """
+    exam_type = _exam_type_arg()
+    extra = ""
+    params: list = []
+    if exam_type is not None:
+        extra = "AND exam_type = ?"
+        params.append(exam_type)
+
     conn = get_connection()
     try:
         rows = conn.execute(
-            """SELECT category, difficulty, questions, user_answers
-               FROM quiz_sessions
-               WHERE category != '' AND user_answers IS NOT NULL"""
+            f"""SELECT category, difficulty, questions, user_answers
+                FROM quiz_sessions
+                WHERE category != '' AND user_answers IS NOT NULL {extra}""",
+            params,
         ).fetchall()
 
         # カテゴリ毎に集計バケツを準備
@@ -274,12 +343,20 @@ def tag_breakdown():
     タグの正規化は ``_normalize_tags`` で生成時に lowercase 済み前提だが、
     旧データや手動投入に備えて読み出し側でも軽い strip+lower をかける。
     """
+    exam_type = _exam_type_arg()
+    extra = ""
+    params: list = []
+    if exam_type is not None:
+        extra = "AND exam_type = ?"
+        params.append(exam_type)
+
     conn = get_connection()
     try:
         rows = conn.execute(
-            """SELECT questions, user_answers
-               FROM quiz_sessions
-               WHERE user_answers IS NOT NULL"""
+            f"""SELECT questions, user_answers
+                FROM quiz_sessions
+                WHERE user_answers IS NOT NULL {extra}""",
+            params,
         ).fetchall()
 
         from collections import defaultdict
@@ -594,13 +671,21 @@ def get_profile():
 
     すべて answered = user_answers が NULL でない問題が対象。
     """
+    exam_type = _exam_type_arg()
+    extra = ""
+    params: list = []
+    if exam_type is not None:
+        extra = "AND exam_type = ?"
+        params.append(exam_type)
+
     conn = get_connection()
     try:
         rows = conn.execute(
-            """SELECT session_id, source_title, generated_at, answered_at,
-                      questions, user_answers
-               FROM quiz_sessions
-               WHERE user_answers IS NOT NULL"""
+            f"""SELECT session_id, source_title, generated_at, answered_at,
+                       questions, user_answers
+                FROM quiz_sessions
+                WHERE user_answers IS NOT NULL {extra}""",
+            params,
         ).fetchall()
     finally:
         conn.close()

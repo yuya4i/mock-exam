@@ -5,9 +5,12 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# package.jsonをコピーしてインストール（キャッシュ活用）
-COPY package.json ./
-RUN npm install --save-exact
+# package.json + lockfile をコピーして再現可能インストール。
+# `npm install`(caret 範囲)は lockfile を使わず最新 transitive を引く
+# ため、依存の新規 publish に "workspace:*" 入り等が紛れてビルドが
+# 壊れることがあった。lockfile 固定の `npm ci` で再現性を担保する。
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # ソースをコピーしてビルド
 COPY . .
