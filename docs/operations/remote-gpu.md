@@ -76,6 +76,41 @@ WoL で Windows が起きても、WSL2 / docker / ollama が自動で上がら�
 - 補足: WSL はログオンしないと起動しないため、**自動ログオン** か
   Windows サービス化 (例: NSSM で `wsl ...` を常駐) を検討。
 
+### 3-1. 寝起きで quiz-app のポートが切れる問題の自動 heal (実装済)
+
+観測された実害: スリープ復帰後、ollama (:11434) は生き残るのに
+**quiz-backend (:4321) / frontend (:1234) のホストポートだけ落ちる**
+(コンテナは healthy = 内部 :4321 は 200。Docker Desktop の WSL2
+port-proxy が resume で再バインドされない既知挙動)。手動だと毎回
+`docker compose restart` が要る。
+
+これを **「システム再開」イベントで自動修復**する:
+
+- `scripts/resume-heal.sh` — 冪等 heal。docker 起動待ち → ホスト :4321 を
+  プローブ → 200 なら何もしない / それ以外なら `docker compose restart`。
+  ログは `~/.cache/quizgpu-resume-heal.log`。
+- `scripts/install-resume-task.cmd` — タスク登録 (非管理者 cmd で実行)。
+  トリガ = `Microsoft-Windows-Power-Troubleshooter` EventID 1 (system
+  resumed)、アクション = `wsl.exe → resume-heal.sh`、`/IT`(ログオン中
+  のみ・パスワード保存なし)。
+
+```bat
+REM 登録 (GPU-PC の Windows で)
+cmd /c %USERPROFILE%\...\quiz-app\scripts\install-resume-task.cmd
+REM 手動テスト
+schtasks /Run /TN "quizgpu-resume-restart"
+REM 確認 (heal ログに新エントリが出れば チェーン成立)
+wsl -d Ubuntu -u sna -e tail -5 ~/.cache/quizgpu-resume-heal.log
+REM 削除
+schtasks /Delete /TN "quizgpu-resume-restart" /F
+```
+
+> 注: `install-resume-task.cmd` は GPU-PC 固有値 (`/RU t4k1h`,
+> `-d Ubuntu`, `-u sna`, repo パス) をハードコード。別機では編集する。
+> WoL → 起床 → このタスクが ~15-60 秒で quiz-app を復旧、という流れ。
+> より根本的に直すなら WSL の `networkingMode=mirrored` (§本書末尾の
+> 検討メモ参照: resume 耐性 + Tailscale 直結も同時に解決)。
+
 ## 4. (任意) pi-calc から GPU-PC の Ollama を直接叩く場合
 
 将来 pi-calc 上でアプリを動かす構成にするなら、backend の
